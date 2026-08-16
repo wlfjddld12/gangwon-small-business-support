@@ -1,0 +1,15 @@
+.env
+.streamlit/secrets.toml
+
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+dev_backup/
+requirements_full.txt
+
+.vscode/
+.DS_Store
+Thumbs.db
+data/
