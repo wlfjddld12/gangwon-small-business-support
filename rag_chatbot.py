@@ -1,6 +1,7 @@
 import os
 import re
 import json
+from datetime import date
 from collections import defaultdict
 from pathlib import Path
 
@@ -18,7 +19,6 @@ BASE_DIR = Path(__file__).resolve().parent
 CHROMA_DIR = BASE_DIR / "chroma_db"
 
 COLLECTION_NAME = "support_policy"
-
 GEMINI_MODEL = "gemini-3.6-flash"
 
 EMBEDDING_MODEL = (
@@ -26,13 +26,10 @@ EMBEDDING_MODEL = (
     "paraphrase-multilingual-MiniLM-L12-v2"
 )
 
-VECTOR_SEARCH_COUNT = 80
-FINAL_CONTEXT_COUNT = 14
+VECTOR_SEARCH_COUNT = 90
+FINAL_CONTEXT_COUNT = 16
+MAX_RESULTS = 3
 
-
-# =========================================================
-# 2. Streamlit 설정
-# =========================================================
 
 st.set_page_config(
     page_title="강원 소상공인 혜택 도우미",
@@ -42,957 +39,736 @@ st.set_page_config(
 
 
 # =========================================================
-# 화면 디자인
-# GANGWON_SUPPORT_THEME_V1
+# 2. HTML 출력
 # =========================================================
 
-st.markdown(
+def render_html(markup):
+
+    cleaned = "\n".join(
+        line.strip()
+        for line in str(markup).splitlines()
+        if line.strip()
+    )
+
+    st.markdown(
+        cleaned,
+        unsafe_allow_html=True,
+    )
+
+
+def html_escape(text):
+
+    text = str(text or "")
+
+    return (
+        text
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+        .replace("'", "&#39;")
+    )
+
+
+# =========================================================
+# 3. 금액을 읽기 쉽게 변환
+#
+# 예:
+# 533천 원     → 53만 3천 원
+# 6,600천 원   → 660만 원
+# 70,000천 원  → 7,000만 원
+# 25천 원      → 2만 5천 원
+# =========================================================
+
+def korean_won_from_thousand(value):
+
+    try:
+        thousand_units = int(
+            round(float(value))
+        )
+    except Exception:
+        return None
+
+    won = thousand_units * 1000
+
+    man = won // 10000
+    remainder = won % 10000
+    cheon = remainder // 1000
+
+    parts = []
+
+    if man > 0:
+        parts.append(
+            f"{man:,}만"
+        )
+
+    if cheon > 0:
+        parts.append(
+            f"{cheon}천"
+        )
+
+    if not parts:
+        return f"{thousand_units:,}천 원"
+
+    return " ".join(parts) + " 원"
+
+
+def normalize_amount_display(text):
+
+    text = str(
+        text or ""
+    )
+
+    # 533천 원 / 6,600천원 / 70000 천 원 형태 변환
+    pattern = re.compile(
+        r"(?<![\d.])"
+        r"(\d[\d,]*(?:\.\d+)?)"
+        r"\s*천\s*원"
+    )
+
+    def replace_match(match):
+
+        raw_number = (
+            match.group(1)
+            .replace(",", "")
+        )
+
+        converted = korean_won_from_thousand(
+            raw_number
+        )
+
+        if converted:
+            return converted
+
+        return match.group(0)
+
+    return pattern.sub(
+        replace_match,
+        text
+    )
+
+
+# =========================================================
+# 4. 디자인
+# =========================================================
+
+render_html(
     """
-    <style>
+<style>
 
-    /* ====================================================
-       전체 앱 배경
-    ==================================================== */
+:root {
+    --navy: #123A59;
+    --teal: #277B77;
+    --text: #294457;
+    --muted: #718493;
+    --line: #D9E4E9;
 
-    .stApp {
-        background:
-            linear-gradient(
-                180deg,
-                #F5F8FA 0%,
-                #F8FAFB 100%
-            );
-    }
+    --green-bg: #E9F7F0;
+    --green: #17694E;
+
+    --yellow-bg: #FFF4D7;
+    --yellow: #875A00;
+
+    --red-bg: #FCEBEC;
+    --red: #9D3030;
+}
 
 
-    /* ====================================================
-       메인 콘텐츠 폭
-    ==================================================== */
+html,
+body,
+[class*="css"] {
+    font-family:
+        "Pretendard",
+        "Noto Sans KR",
+        "Apple SD Gothic Neo",
+        sans-serif;
+}
+
+
+.stApp {
+    background:
+        radial-gradient(
+            circle at 95% 2%,
+            rgba(39,123,119,0.10),
+            transparent 26%
+        ),
+        linear-gradient(
+            180deg,
+            #F2F7F8 0%,
+            #F8FAFB 52%,
+            #F3F6F8 100%
+        );
+}
+
+
+.block-container {
+    max-width: 790px !important;
+    padding-top: 2rem !important;
+    padding-bottom: 4rem !important;
+}
+
+
+h1 {
+    color: var(--navy) !important;
+    font-size: 2.55rem !important;
+    line-height: 1.18 !important;
+    font-weight: 900 !important;
+    letter-spacing: -0.05em !important;
+    margin-bottom: 0.75rem !important;
+}
+
+
+h3 {
+    color: #173E5A !important;
+    font-size: 1.43rem !important;
+    font-weight: 850 !important;
+    letter-spacing: -0.035em !important;
+}
+
+
+p,
+li {
+    color: var(--text);
+    font-size: 1.10rem;
+    line-height: 1.72;
+}
+
+
+[data-testid="stCaptionContainer"] {
+    color: var(--muted) !important;
+    font-size: 1.02rem !important;
+    line-height: 1.6 !important;
+}
+
+
+/* =========================================================
+   첫 화면
+========================================================= */
+
+.hero-card {
+    background: rgba(255,255,255,0.97);
+    border: 1px solid #D7E3E9;
+    border-radius: 24px;
+    padding: 1.45rem 1.5rem;
+    margin: 0.7rem 0 1.65rem 0;
+    box-shadow: 0 15px 38px rgba(30,58,78,0.08);
+}
+
+
+.hero-label {
+    display: inline-block;
+    background: #E7F4F2;
+    color: #246B67;
+    border-radius: 999px;
+    padding: 0.4rem 0.74rem;
+    font-size: 0.99rem;
+    font-weight: 850;
+    margin-bottom: 0.82rem;
+}
+
+
+.hero-title {
+    color: var(--navy);
+    font-size: 1.68rem;
+    line-height: 1.4;
+    font-weight: 900;
+    letter-spacing: -0.04em;
+    margin-bottom: 0.55rem;
+}
+
+
+.hero-text {
+    color: #536C7E;
+    font-size: 1.12rem;
+    line-height: 1.72;
+    font-weight: 560;
+}
+
+
+/* =========================================================
+   입력창
+========================================================= */
+
+.stTextArea textarea {
+    min-height: 155px !important;
+    background: #FFFFFF !important;
+    color: #203B50 !important;
+    border: 2px solid #D4E0E6 !important;
+    border-radius: 18px !important;
+    padding: 1.1rem 1.15rem !important;
+    font-size: 1.22rem !important;
+    line-height: 1.7 !important;
+
+    box-shadow:
+        0 8px 22px rgba(29,57,76,0.06)
+        !important;
+}
+
+
+.stTextArea textarea:focus {
+    border-color: #2E827D !important;
+
+    box-shadow:
+        0 0 0 4px rgba(46,130,125,0.12),
+        0 10px 26px rgba(29,57,76,0.08)
+        !important;
+}
+
+
+.stTextArea textarea::placeholder {
+    color: #879AA7 !important;
+    opacity: 1 !important;
+}
+
+
+/* =========================================================
+   버튼
+========================================================= */
+
+.stButton > button {
+    min-height: 64px !important;
+    border-radius: 15px !important;
+    border: 1px solid #D3E0E6 !important;
+    background: #FFFFFF !important;
+    color: #23465D !important;
+    font-size: 1.13rem !important;
+    font-weight: 850 !important;
+    letter-spacing: -0.025em !important;
+}
+
+
+.stButton > button:hover {
+    border-color: #2E827D !important;
+    color: #176B66 !important;
+    background: #EFF8F7 !important;
+
+    box-shadow:
+        0 8px 18px rgba(39,123,119,0.11);
+}
+
+
+button[data-testid="baseButton-primary"] {
+    min-height: 72px !important;
+    border: none !important;
+    border-radius: 17px !important;
+
+    background:
+        linear-gradient(
+            135deg,
+            #123A59 0%,
+            #205D73 58%,
+            #2D807A 100%
+        )
+        !important;
+
+    color: #FFFFFF !important;
+    font-size: 1.25rem !important;
+    font-weight: 900 !important;
+
+    box-shadow:
+        0 12px 28px rgba(18,58,89,0.22)
+        !important;
+}
+
+
+button[data-testid="baseButton-primary"] *,
+button[data-testid="baseButton-primary"] p,
+button[data-testid="baseButton-primary"] span,
+button[data-testid="baseButton-primary"] div {
+    color: #FFFFFF !important;
+}
+
+
+[data-testid="stExpander"] {
+    background: #FFFFFF !important;
+    border: 1px solid #DCE6EB !important;
+    border-radius: 15px !important;
+    overflow: hidden !important;
+}
+
+
+[data-testid="stExpander"] summary {
+    color: #38566B !important;
+    font-size: 1.06rem !important;
+    font-weight: 800 !important;
+}
+
+
+hr {
+    border: 0 !important;
+    border-top: 1px solid #DDE6EB !important;
+    margin-top: 1.55rem !important;
+    margin-bottom: 1.55rem !important;
+}
+
+
+/* =========================================================
+   결과 상단
+========================================================= */
+
+.result-card {
+    background: rgba(255,255,255,0.98);
+    border: 1px solid #D9E5EA;
+    border-radius: 24px;
+    padding: 1.45rem;
+    margin: 0.8rem 0 1rem 0;
+
+    box-shadow:
+        0 16px 40px rgba(28,55,75,0.09);
+}
+
+
+.amount-label {
+    color: #647C8C;
+    font-size: 1.02rem;
+    font-weight: 800;
+    margin-bottom: 0.16rem;
+}
+
+
+.amount-main {
+    color: #103B5B;
+    font-size: 2.35rem;
+    line-height: 1.18;
+    font-weight: 950;
+    letter-spacing: -0.055em;
+    margin-bottom: 0.7rem;
+}
+
+
+.policy-name {
+    color: #173F5B;
+    font-size: 1.6rem;
+    line-height: 1.4;
+    font-weight: 900;
+    letter-spacing: -0.04em;
+    margin-bottom: 0.75rem;
+}
+
+
+.type-pill {
+    display: inline-block;
+    background: #EDF3F6;
+    color: #5B7181;
+    border-radius: 999px;
+    padding: 0.42rem 0.72rem;
+    font-size: 0.98rem;
+    font-weight: 800;
+}
+
+
+/* =========================================================
+   공통 카드
+========================================================= */
+
+.info-card {
+    background: #FFFFFF;
+    border: 1px solid #DFE8ED;
+    border-radius: 18px;
+    padding: 1.1rem 1.15rem;
+    margin: 0.75rem 0;
+
+    box-shadow:
+        0 5px 15px rgba(30,56,76,0.035);
+}
+
+
+.info-title {
+    color: #23475F;
+    font-size: 1.14rem;
+    font-weight: 900;
+    margin-bottom: 0.55rem;
+}
+
+
+/* =========================================================
+   내 조건 확인
+========================================================= */
+
+.condition-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 1rem;
+    padding: 0.78rem 0;
+
+    border-bottom:
+        1px solid #E7EEF2;
+}
+
+
+.condition-row:last-child {
+    border-bottom: none;
+}
+
+
+.condition-label {
+    color: #38566A;
+    font-size: 1.12rem;
+    font-weight: 850;
+}
+
+
+.condition-status {
+    border-radius: 999px;
+    padding: 0.48rem 0.82rem;
+    font-size: 1.04rem;
+    font-weight: 900;
+    white-space: nowrap;
+}
+
+
+.status-good {
+    background: var(--green-bg);
+    color: var(--green);
+}
+
+
+.status-warn {
+    background: var(--yellow-bg);
+    color: var(--yellow);
+}
+
+
+.status-bad {
+    background: var(--red-bg);
+    color: var(--red);
+}
+
+
+/* =========================================================
+   신청상태
+========================================================= */
+
+.application-card {
+    background:
+        linear-gradient(
+            135deg,
+            #FFFFFF,
+            #F7FAFB
+        );
+
+    border:
+        1px solid #DBE6EB;
+    border-radius: 18px;
+    padding: 1.1rem 1.15rem;
+    margin: 0.75rem 0;
+}
+
+
+.application-status {
+    display: inline-block;
+    border-radius: 999px;
+    padding: 0.48rem 0.82rem;
+    font-size: 1.10rem;
+    font-weight: 900;
+    margin-bottom: 0.5rem;
+}
+
+
+.application-detail {
+    color: #526B7D;
+    font-size: 1.08rem;
+    line-height: 1.6;
+    font-weight: 570;
+}
+
+
+/* =========================================================
+   전화
+========================================================= */
+
+.phone-card {
+    background:
+        linear-gradient(
+            135deg,
+            #EDF7F5,
+            #F6FAFB
+        );
+
+    border:
+        1px solid #D0E5E2;
+    border-radius: 18px;
+    padding: 1.1rem 1.15rem;
+    margin: 0.85rem 0 0.65rem 0;
+}
+
+
+.phone-label {
+    color: #22615D;
+    font-size: 1.05rem;
+    font-weight: 850;
+    margin-bottom: 0.25rem;
+}
+
+
+.phone-main {
+    color: #183F58;
+    font-size: 1.30rem;
+    line-height: 1.5;
+    font-weight: 900;
+}
+
+
+.tel-button {
+    display: block;
+    width: 100%;
+    box-sizing: border-box;
+
+    padding: 1.05rem;
+    margin: 0.55rem 0 0.8rem 0;
+
+    text-align: center;
+    text-decoration: none !important;
+
+    color: #FFFFFF !important;
+
+    background:
+        linear-gradient(
+            135deg,
+            #277B76,
+            #22627B
+        );
+
+    border-radius: 15px;
+    font-size: 1.20rem;
+    font-weight: 900;
+
+    box-shadow:
+        0 9px 22px rgba(34,98,123,0.18);
+}
+
+
+/* =========================================================
+   전화 질문
+========================================================= */
+
+.call-card {
+    background: #FFFDF7;
+    border: 1px solid #EEE0B8;
+    border-radius: 18px;
+    padding: 1.1rem 1.15rem;
+    margin: 0.8rem 0;
+}
+
+
+.call-title {
+    color: #72571B;
+    font-size: 1.14rem;
+    font-weight: 900;
+    margin-bottom: 0.65rem;
+}
+
+
+.call-line {
+    color: #434C55;
+    font-size: 1.12rem;
+    line-height: 1.72;
+    font-weight: 580;
+    margin: 0.38rem 0;
+}
+
+
+/* =========================================================
+   모바일
+========================================================= */
+
+@media (max-width: 640px) {
 
     .block-container {
-        max-width: 780px;
-        padding-top: 2.7rem;
-        padding-bottom: 4rem;
+        padding-top: 1.15rem !important;
+        padding-left: 0.9rem !important;
+        padding-right: 0.9rem !important;
+        padding-bottom: 2.8rem !important;
     }
-
-
-    /* ====================================================
-       전체 기본 글자
-    ==================================================== */
-
-    html,
-    body,
-    [class*="css"] {
-        font-family:
-            "Pretendard",
-            "Noto Sans KR",
-            "Apple SD Gothic Neo",
-            sans-serif;
-    }
-
-
-    p {
-        line-height: 1.72;
-        color: #334155;
-    }
-
-
-    /* ====================================================
-       제목
-    ==================================================== */
 
     h1 {
-        color: #17324D !important;
-        font-size: 2.55rem !important;
-        font-weight: 800 !important;
-        line-height: 1.22 !important;
-        letter-spacing: -0.045em !important;
-        margin-bottom: 0.65rem !important;
+        font-size: 2.05rem !important;
     }
-
-
-    h2 {
-        color: #17324D !important;
-        font-size: 1.85rem !important;
-        font-weight: 750 !important;
-        line-height: 1.3 !important;
-        letter-spacing: -0.035em !important;
-    }
-
 
     h3 {
-        color: #203B55 !important;
-        font-size: 1.28rem !important;
-        font-weight: 720 !important;
-        letter-spacing: -0.025em !important;
-        margin-top: 1.35rem !important;
-        margin-bottom: 0.65rem !important;
-    }
-
-
-    /* ====================================================
-       작은 안내 문구
-    ==================================================== */
-
-    [data-testid="stCaptionContainer"] {
-        color: #7A8795 !important;
-        font-size: 0.9rem !important;
-        line-height: 1.55 !important;
-    }
-
-
-    /* ====================================================
-       라디오 영역
-    ==================================================== */
-
-    [data-testid="stRadio"] {
-        background: #FFFFFF;
-        padding: 1rem 1.1rem;
-        border-radius: 16px;
-        border: 1px solid #E3EAF0;
-        box-shadow:
-            0 6px 18px rgba(31, 50, 70, 0.045);
-        margin-top: 0.35rem;
-        margin-bottom: 1.5rem;
-    }
-
-
-    [data-testid="stRadio"] label {
-        color: #334155 !important;
-        font-weight: 600 !important;
-    }
-
-
-    /* ====================================================
-       텍스트 입력창
-    ==================================================== */
-
-    .stTextArea textarea {
-        background: #FFFFFF !important;
-        color: #24364B !important;
-        border: 1px solid #DCE5EC !important;
-        border-radius: 15px !important;
-        min-height: 118px !important;
-        padding: 1rem !important;
-        font-size: 1rem !important;
-        line-height: 1.6 !important;
-        box-shadow:
-            0 5px 16px rgba(30, 52, 72, 0.035);
-    }
-
-
-    .stTextArea textarea:focus {
-        border-color: #2E8C8C !important;
-        box-shadow:
-            0 0 0 3px rgba(46, 140, 140, 0.10)
-            !important;
-    }
-
-
-    .stTextArea textarea::placeholder {
-        color: #9AA6B2 !important;
-    }
-
-
-    /* ====================================================
-       버튼
-    ==================================================== */
-
-    .stButton > button {
-        border-radius: 12px !important;
-        min-height: 46px !important;
-        font-weight: 700 !important;
-        font-size: 0.98rem !important;
-        letter-spacing: -0.01em !important;
-        border: 1px solid #D8E2E9 !important;
-        background: #FFFFFF !important;
-        color: #29435B !important;
-        transition:
-            all 0.18s ease !important;
-    }
-
-
-    .stButton > button:hover {
-        border-color: #2E8C8C !important;
-        color: #176A6A !important;
-        background: #F4FBFA !important;
-        transform: translateY(-1px);
-        box-shadow:
-            0 5px 14px rgba(46, 140, 140, 0.10);
-    }
-
-
-    .stButton > button:focus {
-        box-shadow:
-            0 0 0 3px rgba(46, 140, 140, 0.10)
-            !important;
-    }
-
-
-    /* ====================================================
-       Primary 버튼
-    ==================================================== */
-
-    .stButton > button[kind="primary"],
-    button[data-testid="baseButton-primary"] {
-        background:
-            linear-gradient(
-                135deg,
-                #17324D,
-                #24536C
-            ) !important;
-        color: #FFFFFF !important;
-        border: none !important;
-        box-shadow:
-            0 7px 18px rgba(23, 50, 77, 0.17);
-    }
-
-
-    .stButton > button[kind="primary"]:hover,
-    button[data-testid="baseButton-primary"]:hover {
-        background:
-            linear-gradient(
-                135deg,
-                #21445E,
-                #2D6677
-            ) !important;
-        color: #FFFFFF !important;
-    }
-
-
-    /* ====================================================
-       Divider
-    ==================================================== */
-
-    hr {
-        border: none !important;
-        border-top: 1px solid #E2E8EE !important;
-        margin-top: 1.65rem !important;
-        margin-bottom: 1.65rem !important;
-    }
-
-
-    /* ====================================================
-       Progress
-    ==================================================== */
-
-    [data-testid="stProgressBar"] {
-        margin-top: 0.4rem;
-        margin-bottom: 1.3rem;
-    }
-
-
-    [data-testid="stProgressBar"] > div {
-        background: #E6EDF2 !important;
-        border-radius: 999px !important;
-        height: 7px !important;
-    }
-
-
-    [data-testid="stProgressBar"] > div > div {
-        background:
-            linear-gradient(
-                90deg,
-                #2E8C8C,
-                #356D8C
-            ) !important;
-        border-radius: 999px !important;
-    }
-
-
-    /* ====================================================
-       Expander
-    ==================================================== */
-
-    [data-testid="stExpander"] {
-        background: #FFFFFF !important;
-        border: 1px solid #E1E8ED !important;
-        border-radius: 13px !important;
-        overflow: hidden;
-        box-shadow:
-            0 4px 12px rgba(30, 52, 72, 0.03);
-    }
-
-
-    [data-testid="stExpander"] summary {
-        font-weight: 650 !important;
-        color: #40566B !important;
-    }
-
-
-    /* ====================================================
-       경고 / 안내 박스
-    ==================================================== */
-
-    [data-testid="stAlert"] {
-        border-radius: 14px !important;
-        border: none !important;
-    }
-
-
-    /* ====================================================
-       결과 화면 금액 강조
-    ==================================================== */
-
-    div[data-testid="stMarkdownContainer"] h1:first-child {
-        color: #17324D !important;
-    }
-
-
-    /* ====================================================
-       스크롤바
-    ==================================================== */
-
-    ::-webkit-scrollbar {
-        width: 9px;
-    }
-
-
-    ::-webkit-scrollbar-track {
-        background: transparent;
-    }
-
-
-    ::-webkit-scrollbar-thumb {
-        background: #CCD7DF;
-        border-radius: 999px;
-    }
-
-
-    ::-webkit-scrollbar-thumb:hover {
-        background: #AEBCC7;
-    }
-
-
-    /* ====================================================
-       모바일
-    ==================================================== */
-
-    @media (
-        max-width: 640px
-    ) {
-
-        .block-container {
-            padding-top: 1.5rem;
-            padding-left: 1rem;
-            padding-right: 1rem;
-            padding-bottom: 2.5rem;
-        }
-
-
-        h1 {
-            font-size: 2.05rem !important;
-        }
-
-
-        h2 {
-            font-size: 1.55rem !important;
-        }
-
-
-        h3 {
-            font-size: 1.18rem !important;
-        }
-
-
-        [data-testid="stRadio"] {
-            padding: 0.85rem;
-        }
-
-
-        .stButton > button {
-            min-height: 44px !important;
-            font-size: 0.93rem !important;
-        }
-
-
-        .stTextArea textarea {
-            min-height: 105px !important;
-        }
-
-    }
-
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
-
-# =========================================================
-# 안전 CSS 테마
-# GANGWON_SAFE_CSS_V2
-# =========================================================
-
-st.markdown(
-    """
-    <style>
-
-    /* ====================================================
-       전체 배경
-    ==================================================== */
-
-    .stApp {
-        background:
-            radial-gradient(
-                circle at top right,
-                rgba(46, 140, 140, 0.07),
-                transparent 28%
-            ),
-            linear-gradient(
-                180deg,
-                #F4F8FA 0%,
-                #F8FAFB 48%,
-                #F5F7F9 100%
-            );
-    }
-
-
-    /* ====================================================
-       메인 콘텐츠
-    ==================================================== */
-
-    .block-container {
-        max-width: 760px !important;
-
-        padding-top: 2.7rem !important;
-        padding-bottom: 4rem !important;
-    }
-
-
-    /* ====================================================
-       최상단 제목
-    ==================================================== */
-
-    h1 {
-        color: #153652 !important;
-
-        font-size: 2.65rem !important;
-        font-weight: 850 !important;
-
-        line-height: 1.16 !important;
-
-        letter-spacing: -0.05em !important;
-
-        margin-bottom: 0.8rem !important;
-
-        text-shadow:
-            0 1px 0 rgba(255,255,255,0.75);
-    }
-
-
-    /* 제목 아래 첫 설명문 */
-    h1 + div p {
-        color: #52677A !important;
-
-        font-size: 1rem !important;
-
-        line-height: 1.75 !important;
-    }
-
-
-    /* ====================================================
-       중간 제목
-    ==================================================== */
-
-    h3 {
-        color: #173A56 !important;
-
         font-size: 1.3rem !important;
-        font-weight: 780 !important;
-
-        letter-spacing: -0.03em !important;
-
-        margin-top: 1.55rem !important;
-        margin-bottom: 0.75rem !important;
     }
 
-
-    /* ====================================================
-       일반 본문
-    ==================================================== */
-
-    p {
-        color: #33495D;
-        line-height: 1.7;
+    .hero-card {
+        padding: 1.15rem;
+        border-radius: 20px;
     }
 
-
-    /* ====================================================
-       라디오 선택 영역
-    ==================================================== */
-
-    [data-testid="stRadio"] {
-
-        background:
-            rgba(255,255,255,0.96) !important;
-
-        border:
-            1px solid #DCE6EC !important;
-
-        border-radius:
-            18px !important;
-
-        padding:
-            1.05rem 1.15rem !important;
-
-        margin-top:
-            0.35rem !important;
-
-        margin-bottom:
-            1.95rem !important;
-
-        box-shadow:
-            0 10px 28px rgba(30, 56, 76, 0.075)
-            !important;
+    .hero-title {
+        font-size: 1.46rem;
     }
 
-
-    [data-testid="stRadio"] label {
-
-        color:
-            #344B60 !important;
-
-        font-weight:
-            650 !important;
-
-        padding:
-            0.2rem 0.1rem;
+    .hero-text {
+        font-size: 1.08rem;
     }
-
-
-    /* 선택된 radio의 포인트 */
-    [data-testid="stRadio"] input:checked + div {
-
-        color:
-            #1B696A !important;
-
-        font-weight:
-            750 !important;
-    }
-
-
-    /* ====================================================
-       입력 영역
-    ==================================================== */
-
-    .stTextArea {
-
-        margin-top:
-            0.2rem;
-    }
-
 
     .stTextArea textarea {
-
-        background:
-            rgba(255,255,255,0.98) !important;
-
-        border:
-            1px solid #D6E1E8 !important;
-
-        border-radius:
-            18px !important;
-
-        min-height:
-            120px !important;
-
-        padding:
-            1.1rem 1.15rem !important;
-
-        color:
-            #24394C !important;
-
-        font-size:
-            1rem !important;
-
-        line-height:
-            1.65 !important;
-
-        box-shadow:
-            0 10px 26px rgba(30, 56, 76, 0.065)
-            !important;
-
-        transition:
-            border-color 0.2s ease,
-            box-shadow 0.2s ease,
-            transform 0.2s ease !important;
+        min-height: 165px !important;
+        font-size: 1.17rem !important;
     }
-
-
-    .stTextArea textarea:focus {
-
-        border-color:
-            #2F8C8B !important;
-
-        box-shadow:
-            0 0 0 4px rgba(47, 140, 139, 0.11),
-            0 12px 28px rgba(30, 56, 76, 0.08)
-            !important;
-    }
-
-
-    .stTextArea textarea::placeholder {
-
-        color:
-            #9AA9B5 !important;
-    }
-
-
-    /* ====================================================
-       caption
-    ==================================================== */
-
-    [data-testid="stCaptionContainer"] {
-
-        color:
-            #7D8D99 !important;
-
-        font-size:
-            0.88rem !important;
-
-        line-height:
-            1.55 !important;
-    }
-
-
-    /* ====================================================
-       기본 버튼
-    ==================================================== */
 
     .stButton > button {
-
-        min-height:
-            47px !important;
-
-        border-radius:
-            13px !important;
-
-        border:
-            1px solid #D6E1E8 !important;
-
-        background:
-            rgba(255,255,255,0.96) !important;
-
-        color:
-            #29455B !important;
-
-        font-weight:
-            700 !important;
-
-        letter-spacing:
-            -0.015em !important;
-
-        transition:
-            all 0.18s ease !important;
+        min-height: 65px !important;
+        font-size: 1.10rem !important;
     }
-
-
-    .stButton > button:hover {
-
-        border-color:
-            #2E8C8C !important;
-
-        background:
-            #F0F8F7 !important;
-
-        color:
-            #176867 !important;
-
-        transform:
-            translateY(-1px);
-
-        box-shadow:
-            0 8px 18px rgba(46, 140, 140, 0.11);
-    }
-
-
-    /* ====================================================
-       메인 버튼
-    ==================================================== */
 
     button[data-testid="baseButton-primary"] {
-
-        min-height:
-            54px !important;
-
-        border:
-            none !important;
-
-        border-radius:
-            15px !important;
-
-        background:
-            linear-gradient(
-                135deg,
-                #153954 0%,
-                #1D5770 58%,
-                #267273 100%
-            ) !important;
-
-        color:
-            #FFFFFF !important;
-
-        font-size:
-            1rem !important;
-
-        font-weight:
-            780 !important;
-
-        box-shadow:
-            0 12px 26px rgba(21, 57, 84, 0.21)
-            !important;
+        min-height: 73px !important;
+        font-size: 1.19rem !important;
     }
 
-
-    button[data-testid="baseButton-primary"]:hover {
-
-        background:
-            linear-gradient(
-                135deg,
-                #1A4662 0%,
-                #23687B 58%,
-                #2A8080 100%
-            ) !important;
-
-        color:
-            #FFFFFF !important;
-
-        transform:
-            translateY(-1px);
-
-        box-shadow:
-            0 15px 30px rgba(21, 57, 84, 0.25)
-            !important;
+    .amount-main {
+        font-size: 2.05rem;
     }
 
-
-    /* ====================================================
-       진행바
-    ==================================================== */
-
-    [data-testid="stProgressBar"] > div {
-
-        height:
-            7px !important;
-
-        background:
-            #DFE7EC !important;
-
-        border-radius:
-            999px !important;
+    .policy-name {
+        font-size: 1.42rem;
     }
 
-
-    [data-testid="stProgressBar"] > div > div {
-
-        background:
-            linear-gradient(
-                90deg,
-                #2E8C8C,
-                #236783
-            ) !important;
-
-        border-radius:
-            999px !important;
+    .condition-label {
+        font-size: 1.07rem;
     }
 
-
-    /* ====================================================
-       결과 화면 expander
-    ==================================================== */
-
-    [data-testid="stExpander"] {
-
-        border:
-            1px solid #DDE6EC !important;
-
-        border-radius:
-            14px !important;
-
-        background:
-            rgba(255,255,255,0.96) !important;
-
-        box-shadow:
-            0 6px 16px rgba(30, 56, 76, 0.04)
-            !important;
-
-        overflow:
-            hidden !important;
+    .condition-status {
+        font-size: 1rem;
     }
+}
 
-
-    [data-testid="stExpander"] summary {
-
-        color:
-            #40586C !important;
-
-        font-weight:
-            680 !important;
-    }
-
-
-    /* ====================================================
-       구분선
-    ==================================================== */
-
-    hr {
-
-        border:
-            none !important;
-
-        border-top:
-            1px solid #DDE6EC !important;
-
-        margin-top:
-            1.7rem !important;
-
-        margin-bottom:
-            1.7rem !important;
-    }
-
-
-    /* ====================================================
-       결과 화면 제목 강조
-    ==================================================== */
-
-    div[data-testid="stMarkdownContainer"] h1 {
-
-        color:
-            #153652 !important;
-    }
-
-
-    div[data-testid="stMarkdownContainer"] h2 {
-
-        color:
-            #193E59 !important;
-
-        font-weight:
-            790 !important;
-    }
-
-
-    /* ====================================================
-       입력/선택 사이 공간 확보
-    ==================================================== */
-
-    div[data-testid="stTextArea"] {
-
-        margin-bottom:
-            0.35rem;
-    }
-
-
-    /* ====================================================
-       모바일
-    ==================================================== */
-
-    @media (max-width: 640px) {
-
-        .block-container {
-
-            padding-top:
-                1.5rem !important;
-
-            padding-left:
-                1rem !important;
-
-            padding-right:
-                1rem !important;
-
-            padding-bottom:
-                2.5rem !important;
-        }
-
-
-        h1 {
-
-            font-size:
-                2.05rem !important;
-        }
-
-
-        h3 {
-
-            font-size:
-                1.17rem !important;
-        }
-
-
-        [data-testid="stRadio"] {
-
-            padding:
-                0.8rem !important;
-
-            border-radius:
-                15px !important;
-        }
-
-
-        .stTextArea textarea {
-
-            min-height:
-                108px !important;
-
-            border-radius:
-                15px !important;
-        }
-
-
-        .stButton > button {
-
-            min-height:
-                45px !important;
-
-            font-size:
-                0.92rem !important;
-        }
-
-
-        button[data-testid="baseButton-primary"] {
-
-            min-height:
-                51px !important;
-        }
-
-    }
-
-    </style>
-    """,
-    unsafe_allow_html=True,
+</style>
+"""
 )
 
 
 # =========================================================
-# 3. Session State
+# 5. Session State
 # =========================================================
 
-if "screen" not in st.session_state:
-    st.session_state.screen = "search"
+DEFAULT_STATE = {
+    "screen": "search",
+    "results": [],
+    "result_index": 0,
+    "original_question": "",
+    "clarify_question": "",
+    "selected_support": "전체",
+    "call_scripts": {},
+}
 
-if "results" not in st.session_state:
-    st.session_state.results = []
 
-if "result_index" not in st.session_state:
-    st.session_state.result_index = 0
+for key, value in DEFAULT_STATE.items():
 
-if "original_question" not in st.session_state:
-    st.session_state.original_question = ""
-
-if "selected_support" not in st.session_state:
-    st.session_state.selected_support = "전체"
-
-if "clarify_question" not in st.session_state:
-    st.session_state.clarify_question = ""
-
-if "clarify_support" not in st.session_state:
-    st.session_state.clarify_support = "전체"
+    if key not in st.session_state:
+        st.session_state[key] = value
 
 
 # =========================================================
-# 4. Gemini API
+# 6. Gemini
 # =========================================================
 
-API_KEY = os.getenv("GEMINI_API_KEY")
+API_KEY = os.getenv(
+    "GEMINI_API_KEY"
+)
+
 
 if not API_KEY:
 
@@ -1009,7 +785,7 @@ gemini_client = genai.Client(
 
 
 # =========================================================
-# 5. 임베딩 모델
+# 7. Embedding / ChromaDB
 # =========================================================
 
 @st.cache_resource
@@ -1022,10 +798,6 @@ def load_embedding_model():
 
 embedding_model = load_embedding_model()
 
-
-# =========================================================
-# 6. ChromaDB
-# =========================================================
 
 @st.cache_resource
 def load_collection():
@@ -1049,19 +821,17 @@ except Exception as e:
         "정책자료를 불러오지 못했습니다."
     )
 
-    st.code(str(e))
+    st.code(
+        str(e)
+    )
 
     st.stop()
 
 
-# =========================================================
-# 7. 전체 DB
-# =========================================================
-
 @st.cache_resource
 def load_all_records():
 
-    result = collection.get(
+    data = collection.get(
         include=[
             "documents",
             "metadatas",
@@ -1069,8 +839,14 @@ def load_all_records():
     )
 
     return (
-        result.get("documents", []),
-        result.get("metadatas", []),
+        data.get(
+            "documents",
+            []
+        ),
+        data.get(
+            "metadatas",
+            []
+        ),
     )
 
 
@@ -1081,15 +857,12 @@ all_documents, all_metadatas = (
 
 # =========================================================
 # 8. 페이지 인덱스
-#
-# 검색된 청크의 앞·현재·뒤 페이지를
-# Gemini가 함께 볼 수 있도록 준비
 # =========================================================
 
 @st.cache_resource
 def build_page_index():
 
-    page_index = defaultdict(list)
+    index = defaultdict(list)
 
     for document, metadata in zip(
         all_documents,
@@ -1110,29 +883,29 @@ def build_page_index():
             "page"
         )
 
-        if page is None:
-            continue
-
         try:
-
             page = int(page)
 
         except Exception:
-
             continue
 
-        page_index[
-            (source, page)
-        ].append(document)
+        index[
+            (
+                source,
+                page
+            )
+        ].append(
+            document
+        )
 
-    return page_index
+    return index
 
 
 page_index = build_page_index()
 
 
 # =========================================================
-# 9. 텍스트 정규화
+# 9. 공통 문자열
 # =========================================================
 
 def normalize_text(text):
@@ -1147,64 +920,123 @@ def normalize_text(text):
     ).strip()
 
 
-# =========================================================
-# 10. 질문 키워드
-# =========================================================
+def clean_json_text(text):
 
-def extract_keywords(question):
+    text = str(
+        text or ""
+    ).strip()
 
-    words = re.findall(
-        r"[가-힣A-Za-z0-9&]+",
-        question.lower()
+    text = re.sub(
+        r"^```json\s*",
+        "",
+        text,
+        flags=re.IGNORECASE
     )
 
-    stopwords = {
-        "무엇인가요",
-        "무엇",
-        "어떤",
-        "있나요",
-        "있습니까",
-        "알려주세요",
-        "알려줘",
-        "받을",
-        "받는",
-        "있는",
-        "위한",
-        "하려는",
-        "하고",
-        "대한",
-        "관련",
-        "지원",
-        "지원사업",
-        "사업",
-        "기업",
-        "중소기업",
-        "정책",
-        "가능한",
-        "가능",
-        "수",
-        "것",
-        "좀",
-    }
+    text = re.sub(
+        r"^```\s*",
+        "",
+        text
+    )
 
-    keywords = []
+    text = re.sub(
+        r"\s*```$",
+        "",
+        text
+    )
 
-    for word in words:
-
-        if len(word) < 2:
-            continue
-
-        if word in stopwords:
-            continue
-
-        if word not in keywords:
-            keywords.append(word)
-
-    return keywords
+    return text.strip()
 
 
 # =========================================================
-# 11. 정책 분야
+# 10. 지역
+# =========================================================
+
+GANGWON_CITIES = [
+    "춘천",
+    "원주",
+    "강릉",
+    "속초",
+    "동해",
+    "삼척",
+    "태백",
+    "홍천",
+    "횡성",
+    "영월",
+    "평창",
+    "정선",
+    "철원",
+    "화천",
+    "양구",
+    "인제",
+    "고성",
+    "양양",
+]
+
+
+OTHER_REGIONS = [
+    "서울",
+    "경기",
+    "경기도",
+    "인천",
+    "충북",
+    "충청북도",
+    "충남",
+    "충청남도",
+    "대전",
+    "세종",
+    "전북",
+    "전북특별자치도",
+    "전남",
+    "전라남도",
+    "광주",
+    "경북",
+    "경상북도",
+    "경남",
+    "경상남도",
+    "대구",
+    "부산",
+    "울산",
+    "제주",
+]
+
+
+def detect_city(question):
+
+    q = normalize_text(
+        question
+    )
+
+    for city in GANGWON_CITIES:
+
+        if city in q:
+            return city
+
+    return None
+
+
+def detect_region(question):
+
+    q = normalize_text(
+        question
+    )
+
+    if (
+        "강원" in q
+        or detect_city(q)
+    ):
+        return "강원"
+
+    for region in OTHER_REGIONS:
+
+        if region in q:
+            return region
+
+    return None
+
+
+# =========================================================
+# 11. 지원 분야
 # =========================================================
 
 INTENT_GROUPS = {
@@ -1214,15 +1046,18 @@ INTENT_GROUPS = {
         "예비창업",
         "초기창업",
         "스타트업",
-        "청년창업",
-        "창업기업",
+        "사업을 시작",
+        "가게를 열",
     ],
 
     "소상공인": [
         "소상공인",
-        "소공인",
         "자영업",
-        "자영업자",
+        "가게",
+        "식당",
+        "음식점",
+        "카페",
+        "매장",
     ],
 
     "고용": [
@@ -1230,37 +1065,38 @@ INTENT_GROUPS = {
         "채용",
         "직원",
         "근로자",
-        "인력",
         "인건비",
         "장려금",
     ],
 
-    "AI": [
+    "마케팅": [
+        "마케팅",
+        "홍보",
+        "광고",
+        "판로",
+        "온라인 판매",
+        "쇼핑몰",
+        "브랜딩",
+    ],
+
+    "시설": [
+        "시설",
+        "설비",
+        "장비",
+        "기계",
+        "리모델링",
+        "간판",
+        "키오스크",
+    ],
+
+    "기술": [
         "ai",
         "인공지능",
-        "ax",
-        "ai agent",
-        "ai에이전트",
-        "머신러닝",
-        "딥러닝",
-        "온디바이스",
-    ],
-
-    "스마트제조": [
-        "스마트공장",
-        "스마트제조",
-        "자동화",
-        "공정혁신",
-        "제조혁신",
-        "자율제조",
-    ],
-
-    "기술개발": [
         "기술개발",
         "연구개발",
         "r&d",
-        "신제품",
-        "기술혁신",
+        "스마트공장",
+        "자동화",
     ],
 
     "수출": [
@@ -1268,802 +1104,294 @@ INTENT_GROUPS = {
         "해외진출",
         "글로벌",
         "해외시장",
-        "수출기업",
-    ],
-
-    "재창업": [
-        "재창업",
-        "재도전",
-        "폐업",
-        "재기",
-    ],
-
-    "시설": [
-        "시설",
-        "시설투자",
-        "설비",
-        "생산설비",
     ],
 }
 
 
 def detect_intents(question):
 
-    q = normalize_text(question)
+    q = normalize_text(
+        question
+    )
 
-    detected = []
+    result = []
 
-    for intent, terms in (
-        INTENT_GROUPS.items()
-    ):
+    for intent, terms in INTENT_GROUPS.items():
 
         if any(
             term in q
             for term in terms
         ):
+            result.append(intent)
 
-            detected.append(intent)
-
-    return list(
-        dict.fromkeys(detected)
-    )
+    return result
 
 
 # =========================================================
-# 12. 지원 목적
+# 12. 지원 유형
 # =========================================================
 
-PURPOSE_GROUPS = {
+SUPPORT_TYPE_TERMS = {
 
-    "신규채용": [
-        "새로 채용",
-        "신규 채용",
-        "신규채용",
-        "직원을 뽑",
-        "직원 뽑",
-        "사람을 뽑",
-        "채용하려",
-        "채용하고",
-        "새 직원",
+    "지원금": [
+        "지원금",
+        "보조금",
+        "장려금",
+        "인건비",
+        "바우처",
+        "사업비",
     ],
 
-    "도입·활용": [
-        "도입",
-        "활용",
-        "적용",
-        "구축",
-        "자동화",
-        "고도화",
-        "스마트공장",
-    ],
-
-    "개발·R&D": [
-        "개발",
-        "연구개발",
-        "r&d",
-        "기술개발",
-        "제품개발",
-        "신제품",
-    ],
-
-    "사업화": [
-        "사업화",
-        "상용화",
-        "실증",
-        "시제품",
-        "인증",
-        "시장진출",
-    ],
-
-    "자금조달": [
+    "융자": [
         "대출",
         "융자",
-        "자금",
-        "금리",
-        "보증",
+        "정책자금",
+        "운영자금",
         "운전자금",
         "시설자금",
+        "금리",
+    ],
+
+    "보증": [
+        "보증",
+        "신용보증",
+        "보증서",
+        "담보가 부족",
+        "담보 부족",
+    ],
+
+    "R&D": [
+        "r&d",
+        "연구개발",
+        "기술개발",
+        "연구비",
     ],
 }
 
 
-def detect_purposes(question):
+def detect_support_type(question):
 
-    q = normalize_text(question)
-
-    detected = []
-
-    for purpose, terms in (
-        PURPOSE_GROUPS.items()
-    ):
-
-        if any(
-            term in q
-            for term in terms
-        ):
-
-            detected.append(purpose)
-
-    return list(
-        dict.fromkeys(detected)
+    q = normalize_text(
+        question
     )
 
+    found = []
 
-# =========================================================
-# 13. 지역
-# =========================================================
-
-REGION_TERMS = {
-
-    "강원": [
-        "강원",
-        "강원특별자치도",
-        "춘천",
-        "원주",
-        "강릉",
-        "속초",
-        "동해",
-        "삼척",
-        "태백",
-        "홍천",
-        "횡성",
-        "영월",
-        "평창",
-        "정선",
-        "철원",
-        "화천",
-        "양구",
-        "인제",
-        "고성",
-        "양양",
-    ],
-
-    "서울": ["서울"],
-    "경기": ["경기", "경기도"],
-    "인천": ["인천"],
-    "충북": ["충북", "충청북도"],
-    "충남": ["충남", "충청남도"],
-    "대전": ["대전"],
-    "세종": ["세종"],
-    "전북": ["전북", "전북특별자치도"],
-    "전남": ["전남", "전라남도"],
-    "광주": ["광주"],
-    "경북": ["경북", "경상북도"],
-    "경남": ["경남", "경상남도"],
-    "대구": ["대구"],
-    "부산": ["부산"],
-    "울산": ["울산"],
-    "제주": ["제주"],
-}
-
-
-def detect_region(question):
-
-    q = normalize_text(question)
-
-    for region, terms in (
-        REGION_TERMS.items()
-    ):
+    for support_type, terms in SUPPORT_TYPE_TERMS.items():
 
         if any(
             term in q
             for term in terms
         ):
+            found.append(
+                support_type
+            )
 
-            return region
+    if len(found) == 1:
+        return found[0]
+
+    return "전체"
+
+
+# =========================================================
+# 13. 키워드
+# =========================================================
+
+def extract_keywords(question):
+
+    words = re.findall(
+        r"[가-힣A-Za-z0-9&]+",
+        normalize_text(question)
+    )
+
+    stopwords = {
+        "무엇",
+        "어떤",
+        "있나요",
+        "알려주세요",
+        "받을",
+        "있는",
+        "대한",
+        "관련",
+        "지원",
+        "지원사업",
+        "사업",
+        "정책",
+        "가능",
+        "도움",
+        "혜택",
+        "필요",
+    }
+
+    result = []
+
+    for word in words:
+
+        if len(word) < 2:
+            continue
+
+        if word in stopwords:
+            continue
+
+        if word not in result:
+            result.append(word)
+
+    return result
+
+
+# =========================================================
+# 14. Hard Filter
+# =========================================================
+
+EXCLUSIVE_MARKERS = [
+    "지원대상",
+    "신청대상",
+    "대상기업",
+    "관내",
+    "소재기업",
+    "사업장 소재",
+    "본사 소재",
+]
+
+
+def hard_exclusion_reason(
+    document,
+    source,
+    question
+):
+
+    text = normalize_text(
+        f"{source} {document}"
+    )
+
+    q = normalize_text(
+        question
+    )
+
+    user_region = detect_region(
+        question
+    )
+
+    user_city = detect_city(
+        question
+    )
+
+    if (
+        user_region
+        and user_region != "강원"
+    ):
+        return "강원 외 지역"
+
+    exclusive = any(
+        marker in text
+        for marker in EXCLUSIVE_MARKERS
+    )
+
+    if (
+        user_region == "강원"
+        and exclusive
+    ):
+
+        other_regions = [
+            region
+            for region in OTHER_REGIONS
+            if region in text
+        ]
+
+        if (
+            other_regions
+            and "강원" not in text
+        ):
+            return "다른 지역 전용"
+
+    if (
+        user_city
+        and exclusive
+    ):
+
+        other_cities = [
+            city
+            for city in GANGWON_CITIES
+            if (
+                city != user_city
+                and city in text
+            )
+        ]
+
+        broad_terms = [
+            "전국",
+            "강원특별자치도",
+            "강원도",
+            "도내",
+            "중소벤처기업부",
+            "고용노동부",
+            "소상공인시장진흥공단",
+        ]
+
+        if (
+            other_cities
+            and user_city not in text
+            and not any(
+                term in text
+                for term in broad_terms
+            )
+        ):
+            return "다른 시군 전용"
+
+    special_groups = [
+        [
+            "육아휴직 대체인력",
+            "출산육아기",
+        ],
+        [
+            "장애인 고용장려금",
+            "장애인고용",
+        ],
+        [
+            "외국인력 지원",
+            "외국인 고용허가",
+        ],
+        [
+            "계속고용장려금",
+            "정년연장",
+        ],
+    ]
+
+    for group in special_groups:
+
+        if (
+            any(
+                term in text
+                for term in group
+            )
+            and not any(
+                term in q
+                for term in group
+            )
+        ):
+            return "특수자격 전용"
 
     return None
 
 
 # =========================================================
-# 14. 특수조건
-#
-# 질문에 없는 특수조건이 있으면 감점
+# 15. Vector Search
 # =========================================================
 
-SPECIAL_CONDITIONS = {
-
-    "육아·출산·대체인력": {
-        "terms": [
-            "육아휴직",
-            "육아기",
-            "출산",
-            "출산휴가",
-            "대체인력",
-            "출산전후휴가",
-        ],
-        "penalty": 0.25,
-    },
-
-    "외국인력": {
-        "terms": [
-            "외국인력",
-            "외국인 근로자",
-            "외국인근로자",
-            "외국인 고용",
-            "고용허가제",
-            "e-9",
-        ],
-        "penalty": 0.30,
-    },
-
-    "장애인": {
-        "terms": [
-            "장애인",
-            "장애인 고용",
-            "장애인근로자",
-        ],
-        "penalty": 0.30,
-    },
-
-    "신설·증설": {
-        "terms": [
-            "신설",
-            "증설",
-            "신·증설",
-            "신증설",
-            "공장증설",
-            "공장 신설",
-        ],
-        "penalty": 0.45,
-    },
-
-    "청년": {
-        "terms": [
-            "청년",
-            "청년고용",
-            "청년 고용",
-        ],
-        "penalty": 0.65,
-    },
-
-    "고령자": {
-        "terms": [
-            "고령자",
-            "60세 이상",
-            "60세이상",
-            "계속고용",
-        ],
-        "penalty": 0.30,
-    },
-
-    "재창업·폐업": {
-        "terms": [
-            "재창업",
-            "재도전",
-            "폐업",
-            "채무조정",
-        ],
-        "penalty": 0.35,
-    },
-}
-
-
-def special_condition_multiplier(
-    document,
-    source,
-    question,
-):
-
-    combined_text = normalize_text(
-        f"{document} {source}"
-    )
-
-    question_text = normalize_text(
-        question
-    )
-
-    multiplier = 1.0
-
-
-    for _, config in (
-        SPECIAL_CONDITIONS.items()
-    ):
-
-        terms = config["terms"]
-
-        document_has = any(
-            term in combined_text
-            for term in terms
-        )
-
-        question_has = any(
-            term in question_text
-            for term in terms
-        )
-
-        if (
-            document_has
-            and not question_has
-        ):
-
-            multiplier *= config[
-                "penalty"
-            ]
-
-    return multiplier
-
-
-# =========================================================
-# 15. 신규채용 의도 필터
-# =========================================================
-
-NEW_HIRE_POSITIVE_TERMS = [
-    "신규 채용",
-    "신규채용",
-    "신규 고용",
-    "신규고용",
-    "채용지원",
-    "채용 지원",
-    "실업자를 고용",
-    "근로자를 고용",
-    "고용촉진",
-    "고용장려금",
-    "채용 1인당",
-    "신규 채용지원",
-]
-
-
-NEW_HIRE_NEGATIVE_GROUPS = {
-
-    "고용유지": {
-        "terms": [
-            "고용유지지원금",
-            "고용유지조치",
-            "휴업",
-            "휴직수당",
-            "고용 유지",
-        ],
-        "penalty": 0.30,
-    },
-
-    "정규직전환": {
-        "terms": [
-            "정규직 전환",
-            "정규직전환",
-            "기간제 근로자",
-        ],
-        "penalty": 0.45,
-    },
-
-    "계속고용": {
-        "terms": [
-            "계속고용",
-            "정년 연장",
-            "정년연장",
-            "재고용",
-        ],
-        "penalty": 0.25,
-    },
-
-    "산재복귀": {
-        "terms": [
-            "산재장해인",
-            "직장복귀지원금",
-            "원직장 복귀",
-        ],
-        "penalty": 0.20,
-    },
-
-    "근로복지": {
-        "terms": [
-            "근로복지기금",
-            "복지기금",
-            "복지비용",
-        ],
-        "penalty": 0.40,
-    },
-}
-
-
-def is_new_hire_question(
-    question
-):
-
-    q = normalize_text(question)
-
-    return any(
-        term in q
-        for term in PURPOSE_GROUPS[
-            "신규채용"
-        ]
-    )
-
-
-def new_hire_multiplier(
-    document,
-    source,
-    question,
-):
-
-    if not is_new_hire_question(
-        question
-    ):
-
-        return 1.0
-
-
-    text = normalize_text(
-        f"{document} {source}"
-    )
-
-    multiplier = 1.0
-
-
-    positive_matches = sum(
-        1
-        for term in NEW_HIRE_POSITIVE_TERMS
-        if term in text
-    )
-
-
-    if positive_matches >= 1:
-
-        multiplier *= 1.60
-
-
-    if positive_matches >= 2:
-
-        multiplier *= 1.25
-
-
-    for _, config in (
-        NEW_HIRE_NEGATIVE_GROUPS.items()
-    ):
-
-        if any(
-            term in text
-            for term in config["terms"]
-        ):
-
-            multiplier *= config[
-                "penalty"
-            ]
-
-
-    return multiplier
-
-
-# =========================================================
-# 16. 금전지원 우선
-# =========================================================
-
-MONEY_TERMS = [
-    "장려금",
-    "지원금",
-    "보조금",
-    "인건비",
-    "임금 지원",
-    "임금지원",
-    "지원한도",
-    "지원 한도",
-    "지원수준",
-    "만원",
-    "억원",
-    "지급",
-]
-
-
-SERVICE_TERMS = [
-    "컨설팅",
-    "상담",
-    "알선",
-    "채용대행",
-    "동행면접",
-    "구인·구직",
-    "취업지원 서비스",
-]
-
-
-def money_support_multiplier(
-    document,
-    question,
-):
-
-    text = normalize_text(document)
-
-    money_matches = sum(
-        1
-        for term in MONEY_TERMS
-        if term in text
-    )
-
-    service_matches = sum(
-        1
-        for term in SERVICE_TERMS
-        if term in text
-    )
-
-    multiplier = 1.0
-
-
-    if money_matches >= 1:
-
-        multiplier *= 1.25
-
-
-    if money_matches >= 3:
-
-        multiplier *= 1.15
-
-
-    if (
-        service_matches >= 1
-        and money_matches == 0
-    ):
-
-        multiplier *= 0.45
-
-
-    return multiplier
-
-
-# =========================================================
-# 17. 최신·변경 공고 우대
-# =========================================================
-
-def latest_source_multiplier(
-    source
-):
-
-    text = normalize_text(source)
-
-    multiplier = 1.0
-
-
-    if "변경공고" in text:
-
-        multiplier *= 1.20
-
-
-    if "수정" in text:
-
-        multiplier *= 1.10
-
-
-    return multiplier
-
-
-# =========================================================
-# 18. 분야 점수
-# =========================================================
-
-def intent_score(
-    document,
-    intents
-):
-
-    if not intents:
-        return 0.0
-
-    text = normalize_text(document)
-
-    score = 0.0
-
-
-    for intent in intents:
-
-        terms = INTENT_GROUPS.get(
-            intent,
-            []
-        )
-
-        matches = sum(
-            1
-            for term in terms
-            if term in text
-        )
-
-        if matches > 0:
-
-            score += 3.0
-
-            score += min(
-                matches,
-                3
-            ) * 0.6
-
-
-    return score
-
-
-# =========================================================
-# 19. 목적 점수
-# =========================================================
-
-def purpose_score(
-    document,
-    purposes
-):
-
-    if not purposes:
-        return 0.0
-
-    text = normalize_text(document)
-
-    score = 0.0
-
-
-    for purpose in purposes:
-
-        terms = PURPOSE_GROUPS.get(
-            purpose,
-            []
-        )
-
-        matches = sum(
-            1
-            for term in terms
-            if term in text
-        )
-
-        if matches > 0:
-
-            score += 4.0
-
-            score += min(
-                matches,
-                3
-            ) * 0.7
-
-
-    return score
-
-
-# =========================================================
-# 20. 지역 점수
-# =========================================================
-
-def region_score(
-    document,
-    source,
-    requested_region
-):
-
-    if not requested_region:
-
-        return 0.0
-
-
-    text = normalize_text(document)
-
-    source_text = normalize_text(source)
-
-
-    requested_terms = REGION_TERMS.get(
-        requested_region,
-        []
-    )
-
-
-    if any(
-        term in text
-        for term in requested_terms
-    ):
-
-        return 6.0
-
-
-    local_context_terms = [
-        "도내 기업",
-        "도내기업",
-        "도내 중소기업",
-        "도내 소재",
-        "지역 내 중소기업",
-        "지역내 중소기업",
-    ]
-
-
-    if (
-        requested_region == "강원"
-        and "강원" in source_text
-        and any(
-            term in text
-            for term in local_context_terms
-        )
-    ):
-
-        return 5.0
-
-
-    for region, terms in (
-        REGION_TERMS.items()
-    ):
-
-        if region == requested_region:
-            continue
-
-        if any(
-            term in text
-            for term in terms
-        ):
-
-            return -7.0
-
-
-    return 0.0
-
-
-# =========================================================
-# 21. 키워드 점수
-# =========================================================
-
-def keyword_score(
-    document,
-    source,
-    keywords
-):
-
-    if not keywords:
-
-        return 0.0
-
-
-    document_text = normalize_text(
-        document
-    )
-
-    source_text = normalize_text(
-        source
-    )
-
-
-    score = 0.0
-
-    matched = 0
-
-
-    for keyword in keywords:
-
-        key = normalize_text(
-            keyword
-        )
-
-        if key in document_text:
-
-            score += 1.4
-
-            matched += 1
-
-
-        if key in source_text:
-
-            score += 0.3
-
-
-    if matched >= 2:
-
-        score += 1.5
-
-
-    if matched >= 3:
-
-        score += 1.5
-
-
-    return score
-
-
-# =========================================================
-# 22. 의미검색
-# =========================================================
-
-def vector_search(
-    question
-):
-
-    query_embedding = (
-        embedding_model.encode(
+def vector_search(question):
+
+    embedding = (
+        embedding_model
+        .encode(
             question,
             normalize_embeddings=True,
         )
         .tolist()
     )
 
-
     results = collection.query(
         query_embeddings=[
-            query_embedding
+            embedding
         ],
         n_results=min(
             VECTOR_SEARCH_COUNT,
@@ -2076,27 +1404,22 @@ def vector_search(
         ],
     )
 
-
     output = []
-
 
     documents = results.get(
         "documents",
         [[]]
     )[0]
 
-
     metadatas = results.get(
         "metadatas",
         [[]]
     )[0]
 
-
     distances = results.get(
         "distances",
         [[]]
     )[0]
-
 
     for document, metadata, distance in zip(
         documents,
@@ -2112,12 +1435,122 @@ def vector_search(
             }
         )
 
-
     return output
 
 
 # =========================================================
-# 23. 후보 검색
+# 16. 후보 점수
+# =========================================================
+
+def score_candidate(
+    document,
+    source,
+    question,
+    distance
+):
+
+    q = normalize_text(
+        question
+    )
+
+    text = normalize_text(
+        f"{source} {document}"
+    )
+
+    score = 0.0
+
+    if distance is not None:
+
+        score += max(
+            0.0,
+            1.0 - distance
+        ) * 10.0
+
+    keywords = extract_keywords(
+        question
+    )
+
+    score += (
+        sum(
+            1
+            for keyword in keywords
+            if keyword in text
+        )
+        * 1.5
+    )
+
+    intents = detect_intents(
+        question
+    )
+
+    for intent in intents:
+
+        hits = sum(
+            1
+            for term in INTENT_GROUPS.get(
+                intent,
+                []
+            )
+            if term in text
+        )
+
+        if hits:
+            score += (
+                3.0
+                + min(
+                    hits,
+                    3
+                ) * 0.7
+            )
+
+    city = detect_city(
+        question
+    )
+
+    if city:
+
+        if city in text:
+            score += 6.0
+
+        elif any(
+            term in text
+            for term in [
+                "강원특별자치도",
+                "강원도",
+                "도내",
+                "전국",
+            ]
+        ):
+            score += 1.5
+
+    if (
+        "강원" in q
+        and "강원" in text
+    ):
+        score += 4.0
+
+    if any(
+        term in text
+        for term in [
+            "지원금",
+            "보조금",
+            "장려금",
+            "인건비",
+            "지원한도",
+            "대출",
+            "융자",
+            "보증한도",
+            "만원",
+            "억원",
+        ]
+    ):
+        score += 2.0
+
+    return score
+
+
+# =========================================================
+# 17. 후보 선정
 # =========================================================
 
 def build_ranked_candidates(
@@ -2125,91 +1558,49 @@ def build_ranked_candidates(
     support_type
 ):
 
-    keywords = extract_keywords(
-        question
-    )
-
-    intents = detect_intents(
-        question
-    )
-
-    purposes = detect_purposes(
-        question
-    )
-
-    requested_region = detect_region(
-        question
-    )
-
-
-    search_question = question
-
+    query = question
 
     if support_type == "지원금":
 
-        search_question += (
+        query += (
             " 지원금 보조금 장려금 "
-            "인건비 사업비 비용지원"
+            "인건비 사업비 바우처"
         )
-
 
     elif support_type == "융자":
 
-        search_question += (
-            " 융자 대출 정책자금 금리"
+        query += (
+            " 대출 융자 정책자금 "
+            "운전자금 경영안정자금"
         )
-
 
     elif support_type == "보증":
 
-        search_question += (
-            " 보증 신용보증 협약보증"
+        query += (
+            " 신용보증 협약보증 보증서"
         )
-
 
     elif support_type == "R&D":
 
-        search_question += (
-            " 연구개발 R&D 기술개발 연구비"
+        query += (
+            " 연구개발 기술개발 R&D 연구비"
         )
-
-
-    if is_new_hire_question(
-        question
-    ):
-
-        search_question += (
-            " 신규채용 신규 고용 "
-            "사업주 고용장려금 "
-            "채용 인건비 지원"
-        )
-
 
     vector_results = vector_search(
-        search_question
+        query
     )
 
-
-    vector_distance_map = {}
-
-
-    for item in vector_results:
-
-        normalized = normalize_text(
+    distance_map = {
+        normalize_text(
             item["document"]
-        )
+        ):
+        item["distance"]
 
-        vector_distance_map[
-            normalized
-        ] = item[
-            "distance"
-        ]
-
+        for item in vector_results
+    }
 
     candidates = []
-
     seen = set()
-
 
     for document, metadata in zip(
         all_documents,
@@ -2217,312 +1608,154 @@ def build_ranked_candidates(
     ):
 
         if not document:
-
             continue
 
-
-        normalized_document = (
-            normalize_text(document)
+        normalized = normalize_text(
+            document
         )
 
-
-        if normalized_document in seen:
-
+        if normalized in seen:
             continue
-
 
         seen.add(
-            normalized_document
+            normalized
         )
 
-
         metadata = metadata or {}
-
 
         source = metadata.get(
             "source",
             "출처 미상"
         )
 
-
-        distance = (
-            vector_distance_map.get(
-                normalized_document
-            )
-        )
-
-
-        semantic_score = 0.0
-
-
-        if distance is not None:
-
-            semantic_score = max(
-                0.0,
-                1.0 - distance
-            ) * 9.0
-
-
-        k_score = keyword_score(
+        if hard_exclusion_reason(
             document,
             source,
-            keywords
-        )
+            question
+        ):
+            continue
 
-
-        i_score = intent_score(
-            document,
-            intents
-        )
-
-
-        p_score = purpose_score(
-            document,
-            purposes
-        )
-
-
-        r_score = region_score(
+        score = score_candidate(
             document,
             source,
-            requested_region
+            question,
+            distance_map.get(
+                normalized
+            ),
         )
 
-
-        total_score = (
-            semantic_score
-            + k_score
-            + i_score
-            + p_score
-            + r_score
-        )
-
-
-        if (
-            intents
-            and i_score <= 0
-        ):
-
-            total_score -= 4.0
-
-
-        if (
-            purposes
-            and p_score <= 0
-        ):
-
-            total_score -= 3.0
-
-
-        if r_score < 0:
-
-            total_score -= 3.0
-
-
-        # ================================================
-        # 검증한 필터 적용
-        # ================================================
-
-        total_score *= (
-            special_condition_multiplier(
-                document,
-                source,
-                question,
-            )
-        )
-
-
-        total_score *= (
-            new_hire_multiplier(
-                document,
-                source,
-                question,
-            )
-        )
-
-
-        total_score *= (
-            money_support_multiplier(
-                document,
-                question,
-            )
-        )
-
-
-        total_score *= (
-            latest_source_multiplier(
-                source
-            )
-        )
-
-
-        # ================================================
-        # 선택 지원유형 우대
-        # ================================================
-
-        doc_text = normalize_text(
+        text = normalize_text(
             document
         )
-
 
         if support_type == "지원금":
 
             if any(
-                term in doc_text
+                term in text
                 for term in [
                     "지원금",
                     "보조금",
                     "장려금",
                     "인건비",
-                    "정부지원",
-                    "지원비율",
-                    "사업비",
-                    "지원한도",
+                    "바우처",
                 ]
             ):
-
-                total_score += 4.0
-
+                score += 4.0
 
         elif support_type == "융자":
 
             if any(
-                term in doc_text
+                term in text
                 for term in [
                     "융자",
                     "대출",
-                    "금리",
                     "정책자금",
+                    "운전자금",
                 ]
             ):
-
-                total_score += 4.0
-
+                score += 4.0
 
         elif support_type == "보증":
 
             if any(
-                term in doc_text
+                term in text
                 for term in [
                     "보증",
-                    "보증료",
-                    "보증한도",
                     "신용보증",
+                    "보증한도",
                 ]
             ):
-
-                total_score += 4.0
-
+                score += 4.0
 
         elif support_type == "R&D":
 
             if any(
-                term in doc_text
+                term in text
                 for term in [
                     "r&d",
                     "연구개발",
                     "기술개발",
-                    "정부출연금",
-                    "연구비",
                 ]
             ):
+                score += 4.0
 
-                total_score += 4.0
+        if score > 0:
 
-
-        if total_score <= 0:
-
-            continue
-
-
-        candidates.append(
-            {
-                "document": document,
-                "metadata": metadata,
-                "total_score": total_score,
-            }
-        )
-
+            candidates.append(
+                {
+                    "document": document,
+                    "metadata": metadata,
+                    "score": score,
+                }
+            )
 
     candidates.sort(
-        key=lambda x: x[
-            "total_score"
-        ],
-        reverse=True
+        key=lambda x: x["score"],
+        reverse=True,
     )
 
-
     selected = []
-
     page_seen = set()
-
     source_counts = defaultdict(int)
-
 
     for item in candidates:
 
-        metadata = item[
-            "metadata"
-        ]
-
+        metadata = item["metadata"]
 
         source = metadata.get(
             "source",
             "출처 미상"
         )
-
 
         page = metadata.get(
             "page",
             "페이지 미상"
         )
 
-
-        page_key = (
+        key = (
             source,
             page
         )
 
-
-        if page_key in page_seen:
-
+        if key in page_seen:
             continue
 
-
-        if source_counts[
-            source
-        ] >= 5:
-
+        if source_counts[source] >= 5:
             continue
 
+        page_seen.add(key)
+        source_counts[source] += 1
 
-        page_seen.add(
-            page_key
-        )
+        selected.append(item)
 
-
-        source_counts[
-            source
-        ] += 1
-
-
-        selected.append(
-            item
-        )
-
-
-        if len(
-            selected
-        ) >= FINAL_CONTEXT_COUNT:
-
+        if len(selected) >= FINAL_CONTEXT_COUNT:
             break
-
 
     return selected
 
 
 # =========================================================
-# 24. 앞·현재·뒤 페이지
+# 18. 페이지 확장
 # =========================================================
 
 def get_expanded_context(
@@ -2531,16 +1764,12 @@ def get_expanded_context(
 ):
 
     try:
-
         page = int(page)
 
     except Exception:
-
         return ""
 
-
-    combined = []
-
+    output = []
 
     for target_page in [
         page - 1,
@@ -2549,203 +1778,605 @@ def get_expanded_context(
     ]:
 
         if target_page < 1:
-
             continue
 
-
         chunks = page_index.get(
-            (source, target_page),
+            (
+                source,
+                target_page
+            ),
             []
         )
 
+        if chunks:
 
-        if not chunks:
-
-            continue
-
-
-        combined.append(
-            f"""
+            output.append(
+                f"""
 [페이지 {target_page}]
 
 {" ".join(chunks)}
 """
-        )
-
+            )
 
     return "\n".join(
-        combined
+        output
     )
 
 
 # =========================================================
-# 25. JSON 정리
+# 19. 날짜 및 신청상태
 # =========================================================
 
-def clean_json_text(text):
-
-    text = text.strip()
-
-
-    text = re.sub(
-        r"^```json\s*",
-        "",
-        text,
-        flags=re.IGNORECASE
-    )
-
-
-    text = re.sub(
-        r"^```\s*",
-        "",
-        text
-    )
-
-
-    text = re.sub(
-        r"\s*```$",
-        "",
-        text
-    )
-
-
-    return text.strip()
-
-
-# =========================================================
-# 26. 금액 문자열 → 정렬용 숫자
-# =========================================================
-
-def amount_to_number(
-    amount_text
-):
-
-    if not amount_text:
-
-        return -1
-
+def extract_full_dates(text):
 
     text = str(
-        amount_text
-    ).replace(
-        ",",
+        text or ""
+    )
+
+    found = []
+
+    pattern = (
+        r"(20\d{2})\s*[.\-/년]\s*"
+        r"(\d{1,2})\s*[.\-/월]\s*"
+        r"(\d{1,2})"
+    )
+
+    for match in re.finditer(
+        pattern,
+        text
+    ):
+
+        try:
+
+            found.append(
+                date(
+                    int(match.group(1)),
+                    int(match.group(2)),
+                    int(match.group(3)),
+                )
+            )
+
+        except Exception:
+            pass
+
+    return found
+
+
+def extract_year_months(text):
+
+    text = str(
+        text or ""
+    )
+
+    found = []
+
+    for match in re.finditer(
+        r"(20\d{2})\s*[.\-/년]\s*(\d{1,2})\s*월",
+        text
+    ):
+
+        try:
+
+            year = int(
+                match.group(1)
+            )
+
+            month = int(
+                match.group(2)
+            )
+
+            if 1 <= month <= 12:
+
+                pair = (
+                    year,
+                    month
+                )
+
+                if pair not in found:
+                    found.append(pair)
+
+        except Exception:
+            pass
+
+    year_match = re.search(
+        r"(20\d{2})",
+        text
+    )
+
+    if year_match:
+
+        default_year = int(
+            year_match.group(1)
+        )
+
+        for match in re.finditer(
+            r"(?<!\d)(\d{1,2})\s*월",
+            text
+        ):
+
+            month = int(
+                match.group(1)
+            )
+
+            pair = (
+                default_year,
+                month
+            )
+
+            if (
+                1 <= month <= 12
+                and pair not in found
+            ):
+                found.append(pair)
+
+    return found
+
+
+def determine_application_status(
+    period_text
+):
+
+    text = str(
+        period_text or ""
+    ).strip()
+
+    normalized = normalize_text(
+        text
+    )
+
+    today = date.today()
+
+    if (
+        not text
+        or "확인 필요" in normalized
+    ):
+
+        return {
+            "status":
+                "확인 필요",
+
+            "detail":
+                "담당기관에 현재 접수 여부를 확인해주세요.",
+
+            "exclude":
+                False,
+        }
+
+    if any(
+        term in normalized
+        for term in [
+            "상시 접수",
+            "상시접수",
+            "연중 접수",
+            "연중접수",
+            "상시 신청",
+            "상시신청",
+        ]
+    ):
+
+        return {
+            "status":
+                "상시 접수",
+
+            "detail":
+                "상시 접수로 안내된 사업입니다.",
+
+            "exclude":
+                False,
+        }
+
+    if any(
+        term in normalized
+        for term in [
+            "예산 소진",
+            "자금 소진",
+            "소진 시까지",
+        ]
+    ):
+
+        return {
+            "status":
+                "확인 필요",
+
+            "detail":
+                "예산 소진 여부를 담당기관에 확인해주세요.",
+
+            "exclude":
+                False,
+        }
+
+    full_dates = extract_full_dates(
+        text
+    )
+
+    if len(full_dates) >= 2:
+
+        start = full_dates[0]
+        end = full_dates[-1]
+
+        if today < start:
+
+            return {
+                "status":
+                    "접수 예정",
+
+                "detail":
+                    f"{start.month}월 {start.day}일부터 "
+                    f"접수 예정입니다.",
+
+                "exclude":
+                    False,
+            }
+
+        if start <= today <= end:
+
+            return {
+                "status":
+                    "접수 중",
+
+                "detail":
+                    f"{end.month}월 {end.day}일까지입니다.",
+
+                "exclude":
+                    False,
+            }
+
+        return {
+            "status":
+                "접수 종료",
+
+            "detail":
+                f"{end.month}월 {end.day}일에 "
+                f"마감되었습니다.",
+
+            "exclude":
+                True,
+        }
+
+    if (
+        len(full_dates) == 1
+        and any(
+            term in normalized
+            for term in [
+                "까지",
+                "마감",
+                "접수 종료",
+                "신청 종료",
+            ]
+        )
+    ):
+
+        end = full_dates[0]
+
+        if today <= end:
+
+            return {
+                "status":
+                    "접수 중",
+
+                "detail":
+                    f"{end.month}월 {end.day}일까지입니다.",
+
+                "exclude":
+                    False,
+            }
+
+        return {
+            "status":
+                "접수 종료",
+
+            "detail":
+                f"{end.month}월 {end.day}일에 "
+                f"마감되었습니다.",
+
+            "exclude":
+                True,
+        }
+
+    year_months = extract_year_months(
+        text
+    )
+
+    if (
+        year_months
+        and any(
+            term in normalized
+            for term in [
+                "접수 예정",
+                "접수예정",
+                "신청 예정",
+                "신청예정",
+            ]
+        )
+    ):
+
+        target_year, target_month = (
+            year_months[-1]
+        )
+
+        current_pair = (
+            today.year,
+            today.month
+        )
+
+        target_pair = (
+            target_year,
+            target_month
+        )
+
+        if current_pair < target_pair:
+
+            return {
+                "status":
+                    "접수 예정",
+
+                "detail":
+                    f"{target_year}년 "
+                    f"{target_month}월 접수 예정입니다.",
+
+                "exclude":
+                    False,
+            }
+
+        if current_pair == target_pair:
+
+            return {
+                "status":
+                    "확인 필요",
+
+                "detail":
+                    "예정된 접수 시기입니다. "
+                    "현재 접수 여부를 확인해주세요.",
+
+                "exclude":
+                    False,
+            }
+
+        return {
+            "status":
+                "기간 경과",
+
+            "detail":
+                "예정된 접수 시기가 이미 지났습니다.",
+
+            "exclude":
+                True,
+        }
+
+    if year_months:
+
+        target_year, target_month = (
+            year_months[-1]
+        )
+
+        current_pair = (
+            today.year,
+            today.month
+        )
+
+        target_pair = (
+            target_year,
+            target_month
+        )
+
+        if current_pair > target_pair:
+
+            return {
+                "status":
+                    "기간 경과",
+
+                "detail":
+                    "안내된 일정이 이미 지난 사업입니다.",
+
+                "exclude":
+                    True,
+            }
+
+    return {
+        "status":
+            "확인 필요",
+
+        "detail":
+            "담당기관에 현재 접수 여부를 확인해주세요.",
+
+        "exclude":
+            False,
+    }
+
+
+# =========================================================
+# 20. 전화번호
+# =========================================================
+
+PHONE_PATTERN = re.compile(
+    r"(?<!\d)"
+    r"(?:0\d{1,2}[-)]?\s*\d{3,4}-\d{4}"
+    r"|1[2-9]\d{2})"
+    r"(?!\d)"
+)
+
+
+def extract_phone(text):
+
+    if not text:
+        return None
+
+    match = PHONE_PATTERN.search(
+        str(text)
+    )
+
+    if not match:
+        return None
+
+    return (
+        match.group(0)
+        .replace(")", "-")
+        .replace(" ", "")
+    )
+
+
+# =========================================================
+# 21. 결과 검증
+# =========================================================
+
+def validate_result(
+    result,
+    candidates
+):
+
+    sources = {
+        item["metadata"].get(
+            "source",
+            "출처 미상"
+        )
+        for item in candidates
+    }
+
+    source = result.get(
+        "source",
         ""
     )
 
+    if source not in sources:
+        return None
 
-    if "확인 필요" in text:
-
-        return -1
-
-
-    # 월 지급액도 일단 표시금액 기준으로 사용
-    eok_match = re.search(
-        r"(\d+(?:\.\d+)?)\s*억",
-        text
+    result[
+        "application_period"
+    ] = (
+        result.get(
+            "application_period"
+        )
+        or "신청기간 확인 필요"
     )
 
-
-    man_match = re.search(
-        r"(\d+(?:\.\d+)?)\s*만",
-        text
+    status_info = (
+        determine_application_status(
+            result[
+                "application_period"
+            ]
+        )
     )
 
+    if status_info.get(
+        "exclude",
+        False
+    ):
+        return None
 
-    if eok_match:
+    result[
+        "application_status"
+    ] = status_info[
+        "status"
+    ]
 
-        return int(
-            float(
-                eok_match.group(1)
-            )
-            * 100_000_000
+    result[
+        "application_detail"
+    ] = status_info[
+        "detail"
+    ]
+
+    eligibility = result.get(
+        "eligibility",
+        []
+    )
+
+    if not isinstance(
+        eligibility,
+        list
+    ):
+        eligibility = []
+
+    cleaned = []
+
+    for item in eligibility[:4]:
+
+        if not isinstance(
+            item,
+            dict
+        ):
+            continue
+
+        status = item.get(
+            "status",
+            "확인 필요"
         )
 
+        if status not in [
+            "적합",
+            "확인 필요",
+            "부적합",
+        ]:
+            status = "확인 필요"
 
-    if man_match:
+        cleaned.append(
+            {
+                "label":
+                    item.get(
+                        "label",
+                        "조건"
+                    ),
 
-        return int(
-            float(
-                man_match.group(1)
-            )
-            * 10_000
+                "status":
+                    status,
+            }
         )
 
+    result[
+        "eligibility"
+    ] = cleaned
 
-    return -1
+    if any(
+        item["status"] == "부적합"
+        for item in cleaned
+    ):
+        return None
+
+    contact = result.get(
+        "contact",
+        ""
+    )
+
+    phone = extract_phone(
+        contact
+    )
+
+    if phone:
+
+        context = get_expanded_context(
+            source,
+            result.get(
+                "page"
+            )
+        )
+
+        phone_digits = re.sub(
+            r"\D",
+            "",
+            phone
+        )
+
+        context_digits = re.sub(
+            r"\D",
+            "",
+            context
+        )
+
+        if (
+            phone_digits
+            and phone_digits not in context_digits
+        ):
+
+            result[
+                "contact"
+            ] = (
+                "세부 공고 확인"
+            )
+
+    return result
 
 
 # =========================================================
-# 27. 최종 결과 정렬
-# =========================================================
-
-TYPE_PRIORITY = {
-
-    "지원금·보조금": 1,
-
-    "인건비·고용지원": 1,
-
-    "R&D": 2,
-
-    "보증": 3,
-
-    "융자·대출": 4,
-
-    "컨설팅·서비스": 5,
-
-    "기타": 6,
-}
-
-
-def sort_results(
-    results,
-    support_type
-):
-
-    def sort_key(item):
-
-        amount = amount_to_number(
-            item.get(
-                "amount",
-                ""
-            )
-        )
-
-
-        item_type = item.get(
-            "type",
-            "기타"
-        )
-
-
-        if support_type == "전체":
-
-            return (
-                TYPE_PRIORITY.get(
-                    item_type,
-                    9
-                ),
-
-                0 if amount >= 0 else 1,
-
-                -amount,
-            )
-
-
-        return (
-            0 if amount >= 0 else 1,
-
-            -amount,
-        )
-
-
-    return sorted(
-        results,
-        key=sort_key
-    )
-
-
-# =========================================================
-# 28. Gemini 결과 생성
+# 22. Gemini 결과 생성
 # =========================================================
 
 def generate_results(
@@ -2753,24 +2384,20 @@ def generate_results(
     support_type
 ):
 
-    ranked_results = (
+    candidates = (
         build_ranked_candidates(
             question,
             support_type
         )
     )
 
-
-    if not ranked_results:
-
+    if not candidates:
         return []
 
+    contexts = []
 
-    context_parts = []
-
-
-    for index, item in enumerate(
-        ranked_results,
+    for number, item in enumerate(
+        candidates,
         start=1
     ):
 
@@ -2778,31 +2405,20 @@ def generate_results(
             "metadata"
         ]
 
-
         source = metadata.get(
             "source",
             "출처 미상"
         )
-
 
         page = metadata.get(
             "page",
             "페이지 미상"
         )
 
-
-        expanded_text = (
-            get_expanded_context(
-                source,
-                page
-            )
-        )
-
-
-        context_parts.append(
+        contexts.append(
             f"""
 ========================================
-후보자료 {index}
+후보자료 {number}
 ========================================
 
 파일:
@@ -2811,257 +2427,164 @@ def generate_results(
 검색 중심 페이지:
 {page}
 
-앞·현재·뒤 페이지:
-
-{expanded_text}
+{get_expanded_context(
+    source,
+    page
+)}
 """
         )
 
-
     context = "\n\n".join(
-        context_parts
+        contexts
     )
 
+    support_rules = {
 
-    # =====================================================
-    # 지원 유형 규칙
-    # =====================================================
+        "지원금":
+            "지원금·보조금·장려금·인건비·바우처 등 "
+            "비용지원 성격 사업을 우선 선정하세요.",
 
-    if support_type == "지원금":
+        "융자":
+            "융자·대출·정책자금 사업을 우선 선정하세요.",
 
-        support_rule = """
-지원금·보조금·장려금·인건비 등
-실제 비용지원 성격의 사업만 선정하세요.
+        "보증":
+            "신용보증·협약보증 등 보증사업을 선정하세요.",
 
-융자와 보증은 제외하세요.
+        "R&D":
+            "연구개발비·기술개발비 지원사업을 선정하세요.",
 
-상담·교육·컨설팅만 제공하는 사업은 제외하세요.
-"""
-
-
-    elif support_type == "융자":
-
-        support_rule = """
-융자·대출·정책자금 사업만 선정하세요.
-
-지원금, 보증, 단순 R&D는 제외하세요.
-"""
-
-
-    elif support_type == "보증":
-
-        support_rule = """
-신용보증, 협약보증 등
-보증 성격의 사업만 선정하세요.
-"""
-
-
-    elif support_type == "R&D":
-
-        support_rule = """
-연구개발비 또는 기술개발비를
-지원하는 R&D 사업만 선정하세요.
-"""
-
-
-    else:
-
-        support_rule = """
-사용자의 상황에 가장 직접적으로 도움이 되는 사업을
-종류와 관계없이 최대 3개 선정하세요.
-
-실제 비용 지원이 가능한 사업을 우선 검토하세요.
-
-우선순위는 다음과 같습니다.
-
-1. 지원금·보조금
-2. 인건비·고용지원
-3. R&D
-4. 보증
-5. 융자·대출
-6. 컨설팅·서비스
-"""
-
-
-    new_hire_rule = ""
-
-
-    if is_new_hire_question(
-        question
-    ):
-
-        new_hire_rule = """
-사용자가 '새로운 직원을 채용'하려는 상황입니다.
-
-가장 중요합니다.
-
-신규채용을 직접 지원하는
-장려금·인건비 지원사업을 우선하세요.
-
-다음과 같은 사업은 사용자가 해당 조건을
-직접 언급하지 않았다면 추천하지 마세요.
-
-- 육아휴직 대체인력
-- 기존 직원 고용유지
-- 고령자 계속고용
-- 정규직 전환
-- 장애인 전용
-- 외국인력 전용
-- 산재근로자 직장복귀
-- 공장 신설·증설을 전제로 하는 지원
-
-단순히 '고용'이라는 단어가 있다고
-신규채용 지원으로 판단하면 안 됩니다.
-"""
-
+        "전체":
+            "사용자 상황에 직접 도움이 되는 사업을 "
+            "종류에 관계없이 선정하세요.",
+    }
 
     prompt = f"""
-당신은 정책정보에 익숙하지 않은
-소상공인과 소규모 사업자를 위한
-정책지원 안내 도우미입니다.
+당신은 디지털 정보 접근에 어려움을 겪을 수 있는
+강원지역 소상공인을 위한 금융·정책지원 안내 전문가입니다.
 
-반드시 아래 PDF 근거자료만 사용하세요.
+반드시 아래 정책자료만 이용하세요.
 
-
-사용자의 선택:
-{support_type}
-
-
-사용자의 질문:
+사용자의 상황:
 {question}
 
+검색 지원유형:
+{support_type}
 
-==================================================
-지원 유형
-==================================================
+지원유형 규칙:
+{support_rules.get(
+    support_type,
+    support_rules["전체"]
+)}
 
-{support_rule}
+현재 날짜는 {date.today().isoformat()} 입니다.
 
+반드시 지켜야 할 규칙:
 
-==================================================
-질문 목적 특별 규칙
-==================================================
+1. 사용자의 지역, 업종, 필요와
+직접 관련된 사업만 선정하세요.
 
-{new_hire_rule}
+2. 최대 {MAX_RESULTS}개까지만 선정하세요.
 
-
-==================================================
-반드시 지켜야 할 규칙
-==================================================
-
-1. 사용자의 지역, 업종, 목적과 직접 관련된 사업만 선정하세요.
-
-2. 최대 3개까지만 선정하세요.
-
-3. 적합한 사업이 1개 또는 2개면
+3. 적합한 사업이 적으면
 억지로 3개를 채우지 마세요.
 
-4. 다른 지역에만 해당되는 사업은 제외하세요.
+4. 다른 지역 전용사업은 제외하세요.
 
-5. 질문에 없는 특별한 자격조건을
-임의로 가정하면 안 됩니다.
+5. 사용자가 말하지 않은 특별한 자격조건은
+임의로 가정하지 마세요.
 
-6. 동일한 사업이 여러 페이지에서 검색되더라도
-최종 결과에는 한 번만 표시하세요.
+6. 동일한 사업은 한 번만 추천하세요.
 
-7. 사업명이 같거나 실질적으로 동일한 사업은
-중복 추천하지 마세요.
+7. 변경공고와 수정공고가 있으면
+최신 공고 내용을 우선하세요.
 
-8. 변경공고와 최초공고의 내용이 충돌할 경우
-변경공고 또는 수정공고의 내용을 우선하세요.
+8. 지원금액, 대출한도, 보증한도,
+지원대상, 신청기간, 문의처는
+정책자료에서 확인되는 사실만 사용하세요.
 
-9. 앞·현재·뒤 페이지를 모두 읽고
-지원금액과 지원조건을 확인하세요.
+9. 사업 전체 예산을
+한 업체가 받을 수 있는 금액으로 쓰지 마세요.
 
-10. 지원금액이 명확한 사업을
-금액을 확인할 수 없는 사업보다 우선하세요.
+10. 신청기간 정보는 원문 내용을 최대한 그대로
+application_period에 적으세요.
 
-11. 사업 전체 예산을
-개별 기업이 받을 수 있는 금액처럼 표현하면 안 됩니다.
+11. 명확하게 접수기간이 종료된 사업이나
+현재 날짜보다 과거의 접수 예정 시기만
+기재되어 있는 사업은 선정하지 마세요.
 
-12. 융자한도는 지원금이 아닙니다.
+12. 다만 "상시 접수", "예산 소진 시까지"처럼
+현재 상태를 확정하기 어려운 사업은
+임의로 종료라고 판단하지 마세요.
 
-13. 단순 상담이나 컨설팅은
-실제 금전지원으로 표현하지 마세요.
+13. 신청기간이 확인되지 않으면
+"신청기간 확인 필요"라고 쓰세요.
 
+14. 전화번호는 근거자료에 실제 있는 경우에만 쓰세요.
 
-==================================================
-사실정보 정확성 규칙
-==================================================
+15. 아래 네 조건을 판정하세요.
 
-아래 규칙은 매우 중요합니다.
+- 지역조건
+- 사업자조건
+- 지원목적
+- 세부요건
 
-14. 지원금액, 대출한도, 보증한도, 지원비율,
-지원기간, 지원대상, 문의처는
-PDF 근거자료에 있는 정보만 사용하세요.
+status는 아래 세 값 중 하나만 사용하세요.
 
-15. 문의처의 전화번호는 반드시 PDF 근거자료에
-실제로 적혀 있는 경우에만 그대로 작성하세요.
+적합
+확인 필요
+부적합
 
-16. 전화번호의 일부 숫자를 추측하거나,
-다른 자료의 전화번호와 조합하거나,
-기관의 대표번호를 임의로 만들어서는 안 됩니다.
+16. 사용자가 알려주지 않았거나
+정책자료만으로 확인할 수 없는 조건은
+반드시 "확인 필요"입니다.
 
-17. 기관명은 확인되지만 전화번호를
-근거자료에서 확인할 수 없다면:
+17. 명확한 부적합이 하나라도 있으면
+그 사업은 추천하지 마세요.
 
-"기관명 · 세부 공고 확인"
+18. 이유 설명은 eligibility에 작성하지 마세요.
+label과 status만 작성하세요.
 
-형태로 작성하세요.
+19. 금액은 정책자료의 금액을 그대로 사용해도 됩니다.
+화면에서 사용자가 읽기 쉬운 단위로 별도 변환합니다.
 
-18. 기관명도 명확하지 않다면:
+반드시 JSON만 반환하세요.
 
-"세부 공고 확인"
+형식:
 
-이라고 작성하세요.
+{{
+    "results": [
+        {{
+            "amount": "533천 원 이내",
+            "name": "공식 사업명",
+            "type": "지원금·보조금",
+            "target": "지원대상 핵심내용",
+            "contact": "기관명과 실제 전화번호",
+            "source": "PDF 파일명",
+            "page": "120",
+            "application_period": "정책자료의 신청기간 정보",
+            "eligibility": [
+                {{
+                    "label": "지역조건",
+                    "status": "적합"
+                }},
+                {{
+                    "label": "사업자조건",
+                    "status": "확인 필요"
+                }},
+                {{
+                    "label": "지원목적",
+                    "status": "적합"
+                }},
+                {{
+                    "label": "세부요건",
+                    "status": "확인 필요"
+                }}
+            ]
+        }}
+    ]
+}}
 
-19. PDF에 적힌 전화번호는 숫자와 하이픈을
-원문 그대로 유지하세요.
-
-20. 지원금액도 절대 추측하지 마세요.
-
-21. 사업 전체 예산,
-예를 들어 "사업예산 100억원",
-"총사업비 50억원" 등의 숫자를
-개별 기업이 받을 수 있는 지원금액으로
-표현해서는 안 됩니다.
-
-22. 기업당, 과제당, 인당, 사업장당 등의
-개별 지원한도가 명확한 경우에만
-amount에 숫자를 작성하세요.
-
-23. 지원비율만 있고 최대금액이 없는 경우
-없는 최대금액을 만들어내지 마세요.
-
-예:
-"비용의 70% 이내"
-
-처럼 근거자료에 확인되는 범위만 표현하세요.
-
-24. 금액이 근거자료에서 명확하게 확인되지 않으면:
-
-"지원금액 확인 필요"
-
-라고 작성하세요.
-
-25. 지원대상 역시 PDF에 없는 조건을
-상식이나 추론으로 추가하면 안 됩니다.
-
-26. 질문자의 지역이 해당 사업의 지원대상이라는
-근거가 불충분하면 해당 사업을 추천하지 마세요.
-
-27. 서로 다른 PDF의 숫자나 조건을 합쳐서
-하나의 사업 조건처럼 작성해서는 안 됩니다.
-
-28. 추천이유에는 설명을 쉽게 바꾸는 것은 가능하지만,
-새로운 자격조건이나 혜택을 추가해서는 안 됩니다.
-
-
-==================================================
-사업 유형
-==================================================
-
-type 값은 아래 중 하나만 사용하세요.
+type은 아래 중 하나만 사용하세요.
 
 지원금·보조금
 인건비·고용지원
@@ -3071,283 +2594,170 @@ R&D
 컨설팅·서비스
 기타
 
-
-==================================================
-JSON 출력
-==================================================
-
-반드시 JSON만 반환하세요.
-
-마크다운을 사용하지 마세요.
-
-형식:
-
-{{
-  "results": [
-    {{
-      "amount": "월 60~80만 원",
-      "name": "사업 공식 명칭",
-      "type": "인건비·고용지원",
-      "reason": "이 사업을 추천하는 이유를 쉬운 한 문장으로 작성",
-      "target": "핵심 신청 대상 한 줄",
-      "contact": "PDF에서 실제 확인된 기관명과 전화번호. 전화번호가 없으면 기관명 · 세부 공고 확인",
-      "source": "PDF 파일명",
-      "page": "120"
-    }}
-  ]
-}}
-
-
-==================================================
-금액 표기
-==================================================
-
-지원금:
-"최대 4,000만 원"
-
-월별 장려금:
-"월 60~80만 원"
-
-기간까지 명확하면:
-"월 60만 원 × 최대 12개월"
-
-융자:
-"대출한도 최대 100억 원"
-
-보증:
-"보증한도 최대 8억 원"
-
-R&D:
-"연구개발비 최대 3억 원"
-
-정말 찾을 수 없는 경우에만:
-"지원금액 확인 필요"
-
-
-==================================================
-문장 길이
-==================================================
-
-reason:
-반드시 한 문장.
-
-target:
-한 줄.
-
-contact:
-한 줄.
-
-
-==================================================
-PDF 근거자료
-==================================================
+근거자료:
 
 {context}
 """
 
-
     response = (
-        gemini_client.models.generate_content(
+        gemini_client
+        .models
+        .generate_content(
             model=GEMINI_MODEL,
             contents=prompt,
         )
     )
 
-
     if not response.text:
-
         return []
 
-
-    cleaned = clean_json_text(
-        response.text
-    )
-
-
     data = json.loads(
-        cleaned
+        clean_json_text(
+            response.text
+        )
     )
 
+    results = []
+    seen_names = set()
 
-    results = data.get(
+    for result in data.get(
         "results",
         []
-    )
+    ):
 
+        if not isinstance(
+            result,
+            dict
+        ):
+            continue
 
-    return sort_results(
-        results,
-        support_type
-    )
+        name_key = normalize_text(
+            result.get(
+                "name",
+                ""
+            )
+        )
+
+        if (
+            not name_key
+            or name_key in seen_names
+        ):
+            continue
+
+        validated = validate_result(
+            result,
+            candidates
+        )
+
+        if not validated:
+            continue
+
+        seen_names.add(
+            name_key
+        )
+
+        results.append(
+            validated
+        )
+
+    return results[:MAX_RESULTS]
 
 
 # =========================================================
-# 애매한 질문 판별
-#
-# 사용자가 "장사가 어렵다", "도움이 필요하다" 정도만
-# 말하고 실제 필요한 지원 목적을 밝히지 않았을 때
-# 바로 정책을 추측하지 않고 한 번 더 물어봅니다.
+# 23. 추가 질문
 # =========================================================
 
-def needs_clarification(
-    question
-):
+def needs_clarification(question):
 
     q = normalize_text(
         question
     )
 
-
-    # -----------------------------------------------------
-    # 사용자가 이미 목적을 명확히 말한 경우
-    # 추가 질문이 필요하지 않음
-    # -----------------------------------------------------
-
-    clear_purpose_terms = [
-
-        # 자금
+    clear_terms = [
         "운영자금",
         "운전자금",
         "대출",
         "융자",
         "보증",
-        "금리",
-        "자금이 필요",
-        "자금 마련",
-        "자금마련",
-        "담보",
-        "담보가 부족",
-        "신용보증",
-        "보증이 필요",
-
-        # 채용
-        "채용",
-        "직원",
         "인건비",
-        "고용",
-
-        # 홍보 / 판로
+        "직원",
+        "채용",
         "마케팅",
         "홍보",
-        "온라인 판매",
-        "온라인판매",
         "판로",
-        "광고",
-        "브랜딩",
-        "쇼핑몰",
-
-        # 시설
-        "시설개선",
-        "시설 개선",
-        "리모델링",
-        "간판",
-        "설비",
+        "시설",
         "장비",
-        "기계",
-        "키오스크",
-
-        # 기술
-        "ai",
-        "인공지능",
-        "스마트공장",
+        "설비",
+        "리모델링",
         "기술개발",
         "연구개발",
         "r&d",
-
-        # 수출
         "수출",
-        "해외진출",
-        "해외 진출",
-        "해외시장",
-
-        # 창업
         "창업",
         "예비창업",
-        "가게를 열",
-        "사업을 시작",
-
     ]
-
 
     if any(
         term in q
-        for term in clear_purpose_terms
+        for term in clear_terms
     ):
-
         return False
 
-
-    # -----------------------------------------------------
-    # 목적은 없고 어려움만 표현한 질문
-    # -----------------------------------------------------
-
-    vague_problem_terms = [
+    vague_terms = [
         "장사가 어렵",
         "장사가 안",
-        "매출이 안",
         "매출이 줄",
         "힘들",
         "어렵",
         "도움",
-        "지원이 있을",
-        "받을 수 있는 지원",
-        "뭐 받을",
-        "무슨 지원",
         "혜택이 있",
-        "지원받을",
+        "지원받",
+        "무슨 지원",
+        "뭐 받을",
     ]
-
 
     return any(
         term in q
-        for term in vague_problem_terms
+        for term in vague_terms
     )
 
 
-# =========================================================
-# 선택한 도움을 원래 질문에 자연스럽게 추가
-# =========================================================
-
 def make_clarified_question(
-    original_question,
+    original,
     choice
 ):
 
     additions = {
 
-        "사업비·운영비 지원":
+        "사업비·운영비":
             " 특히 사업 운영에 드는 비용을 줄일 수 있는 "
-            "지원금, 바우처, 보조금이 필요합니다.",
+            "지원금이나 보조금이 필요합니다.",
 
         "대출·자금조달":
-            " 특히 사업 운영에 필요한 운전자금, "
-            "경영안정자금, 정책자금 대출이 필요합니다.",
+            " 특히 운영자금이나 정책자금 대출이 필요합니다.",
 
         "직원 인건비":
             " 특히 직원 채용이나 인건비 부담을 "
-            "줄일 수 있는 장려금과 지원이 필요합니다.",
+            "줄일 지원이 필요합니다.",
 
         "홍보·마케팅":
-            " 특히 고객을 늘리기 위한 홍보, "
-            "마케팅, 온라인 판로 지원이 필요합니다.",
+            " 특히 홍보, 마케팅, 판로 관련 지원이 필요합니다.",
 
         "시설·장비":
-            " 특히 매장 시설개선, 장비 교체, "
-            "설비 도입 관련 지원이 필요합니다.",
+            " 특히 시설개선이나 장비·설비 관련 "
+            "지원이 필요합니다.",
 
         "보증":
-            " 특히 담보가 부족해 자금조달을 위한 "
-            "신용보증이나 협약보증이 필요합니다.",
+            " 특히 담보 부담을 줄이기 위한 "
+            "신용보증 지원이 필요합니다.",
 
         "잘 모르겠어요":
-            " 어떤 종류의 지원이 가장 적합한지 "
-            "잘 모르겠으니 현재 상황에서 "
-            "실질적으로 도움이 되는 지원을 찾아주세요.",
+            " 어떤 종류가 가장 적합한지 잘 모르겠으니 "
+            "현재 상황에서 도움이 되는 지원을 찾아주세요.",
     }
 
-
     return (
-        original_question.strip()
+        original.strip()
         + additions.get(
             choice,
             ""
@@ -3355,92 +2765,189 @@ def make_clarified_question(
     )
 
 
+def clarify_support_type(choice):
+
+    mapping = {
+
+        "사업비·운영비":
+            "지원금",
+
+        "대출·자금조달":
+            "융자",
+
+        "직원 인건비":
+            "지원금",
+
+        "홍보·마케팅":
+            "지원금",
+
+        "시설·장비":
+            "전체",
+
+        "보증":
+            "보증",
+
+        "잘 모르겠어요":
+            "전체",
+    }
+
+    return mapping.get(
+        choice,
+        "전체"
+    )
+
+
 # =========================================================
-# 추가 질문 선택에 따른 실제 검색 지원유형 결정
-#
-# 운영자금과 시설개선은 지원금뿐 아니라
-# 융자·보증 등도 중요한 경우가 많으므로
-# "전체" 범위에서 검색합니다.
+# 24. 전화 질문 생성
 # =========================================================
 
-def resolve_clarify_support_type(
-    choice,
-    original_support_type,
+def generate_call_script(
+    result,
+    user_question
 ):
 
-    # 사업비·운영비 지원
-    # 보조금·바우처 중심
-    if choice == "사업비·운영비 지원":
+    name = result.get(
+        "name",
+        "해당 지원사업"
+    )
 
-        return "지원금"
+    prompt = f"""
+디지털 정보와 정책용어에 익숙하지 않은
+소상공인이 담당기관에 전화할 때
+화면을 보고 그대로 읽을 수 있는
+짧은 전화 질문을 작성하세요.
 
+사용자 상황:
+{user_question}
 
-    # 대출·자금조달
-    # 정책자금·운전자금·융자 중심
-    if choice == "대출·자금조달":
+지원사업:
+{name}
 
-        return "융자"
+규칙:
 
+1. 정확히 4문장만 작성하세요.
 
-    # 직원 인건비
-    # 장려금·인건비 지원 중심
-    if choice == "직원 인건비":
+2. 어려운 표현을 쓰지 마세요.
 
-        return "지원금"
+3. 첫 문장은 반드시 다음처럼 시작하세요.
 
+"안녕하세요. {name} 보고 연락드렸습니다."
 
-    # 홍보·마케팅
-    # 판로·바우처·사업비 중심
-    if choice == "홍보·마케팅":
+4. 두 번째 문장은 사용자의 상황을 반영해
+지원대상인지 질문하세요.
 
-        return "지원금"
+5. 세 번째 문장은 지금도 신청 가능한지 질문하세요.
 
+6. 네 번째 문장은 무엇을 준비해야 하는지 질문하세요.
 
-    # 시설·장비
-    # 보조금과 시설자금이 함께 있을 수 있음
-    if choice == "시설·장비":
+7. 새로운 사실이나 조건을 만들지 마세요.
 
-        return "전체"
+8. 번호와 글머리표를 사용하지 마세요.
+"""
 
+    try:
 
-    # 보증
-    if choice == "보증":
+        response = (
+            gemini_client
+            .models
+            .generate_content(
+                model=GEMINI_MODEL,
+                contents=prompt,
+            )
+        )
 
-        return "보증"
+        if response.text:
 
+            lines = [
+                line.strip()
+                for line in response.text.splitlines()
+                if line.strip()
+            ]
 
-    # 사용자가 무엇이 필요한지 모르는 경우
-    if choice == "잘 모르겠어요":
+            if len(lines) >= 4:
+                return lines[:4]
 
-        return "전체"
+    except Exception:
+        pass
 
-
-    return original_support_type
+    return [
+        f"안녕하세요. {name} 보고 연락드렸습니다.",
+        "제가 이 지원을 받을 수 있는 대상인지 궁금합니다.",
+        "지금도 신청할 수 있나요?",
+        "신청하려면 무엇을 준비하면 될까요?",
+    ]
 
 
 # =========================================================
-# 29. 처음으로
+# 25. 상태 디자인
+# =========================================================
+
+def condition_css(status):
+
+    if status == "적합":
+        return "status-good"
+
+    if status == "부적합":
+        return "status-bad"
+
+    return "status-warn"
+
+
+def application_css(status):
+
+    if status in [
+        "접수 중",
+        "상시 접수",
+    ]:
+        return "status-good"
+
+    if status in [
+        "접수 종료",
+        "기간 경과",
+    ]:
+        return "status-bad"
+
+    return "status-warn"
+
+
+# =========================================================
+# 26. 처음으로
 # =========================================================
 
 def go_home():
 
     st.session_state.screen = "search"
-
     st.session_state.results = []
-
     st.session_state.result_index = 0
-
     st.session_state.original_question = ""
-
     st.session_state.clarify_question = ""
-
-    st.session_state.clarify_support = "전체"
+    st.session_state.selected_support = "전체"
+    st.session_state.call_scripts = {}
 
     st.rerun()
 
 
 # =========================================================
-# 30. 질문 화면
+# 27. 검색
+# =========================================================
+
+def perform_search(
+    question,
+    support_type
+):
+
+    with st.spinner(
+        "내 상황과 맞는 혜택을 확인하고 있습니다..."
+    ):
+
+        return generate_results(
+            question,
+            support_type
+        )
+
+
+# =========================================================
+# 28. 첫 화면
 # =========================================================
 
 if st.session_state.screen == "search":
@@ -3449,82 +2956,45 @@ if st.session_state.screen == "search":
         "강원 소상공인 혜택 도우미"
     )
 
-
-    st.write(
-        "복잡한 지원사업 공고를 직접 찾지 않아도 됩니다. "
-        "사업 상황을 알려주시면 확인해볼 만한 지원을 찾아드립니다."
+    render_html(
+        """
+<div class="hero-card">
+<div class="hero-label">
+강원지역 소상공인을 위한 AI 안내
+</div>
+<div class="hero-title">
+어려운 정책 이름을 몰라도 괜찮습니다.
+</div>
+<div class="hero-text">
+지금 상황을 평소 말하듯 적어주세요.<br>
+받을 가능성이 있는 혜택을 찾아
+담당기관까지 연결해드립니다.
+</div>
+</div>
+"""
     )
-
 
     st.markdown(
-        "### 어떤 도움이 필요하세요?"
+        "### 어떤 도움이 필요하신가요?"
     )
-
-
-    support_choice = st.radio(
-        "지원 종류",
-        [
-            "💰 지원금",
-            "🏦 대출·융자",
-            "🛡 보증",
-            "🔬 기술개발",
-            "✨ 전체",
-        ],
-        horizontal=True,
-        label_visibility="collapsed",
-    )
-
-
-    SUPPORT_MAP = {
-
-        "💰 지원금":
-            "지원금",
-
-        "🏦 대출·융자":
-            "융자",
-
-        "🛡 보증":
-            "보증",
-
-        "🔬 기술개발":
-            "R&D",
-
-        "✨ 전체":
-            "전체",
-    }
-
-
-    selected_support_type = (
-        SUPPORT_MAP[
-            support_choice
-        ]
-    )
-
-
-    st.markdown(
-        "### 사업 상황을 편하게 적어주세요."
-    )
-
 
     question = st.text_area(
         "사업 상황",
         placeholder=(
-            "예: 원주에서 작은 식당을 운영하고 있는데 "
-            "요즘 매출이 줄어 지원을 받고 싶어요."
+            "예: 춘천에서 식당을 운영하고 있는데 "
+            "요즘 매출이 줄어서 도움이 필요해요."
         ),
-        height=120,
+        height=155,
         label_visibility="collapsed",
     )
 
-
     st.caption(
-        "지역, 업종, 현재 상황을 함께 적어주시면 "
-        "더 잘 맞는 지원을 찾을 수 있습니다."
+        "지역과 업종, 지금 어려운 점을 함께 적어주시면 "
+        "더 정확하게 찾을 수 있습니다."
     )
 
-
     if st.button(
-        "내게 맞는 지원 확인하기",
+        "내가 받을 수 있는 혜택 찾기",
         use_container_width=True,
         type="primary",
     ):
@@ -3532,27 +3002,31 @@ if st.session_state.screen == "search":
         if not question.strip():
 
             st.warning(
-                "궁금한 내용을 입력해주세요."
+                "현재 상황을 한 문장이라도 적어주세요."
             )
-
 
         else:
 
-            # =============================================
-            # 질문의 목적이 너무 넓으면
-            # Gemini를 호출하기 전에 한 번 더 질문
-            # =============================================
+            region = detect_region(
+                question
+            )
 
-            if needs_clarification(
+            if (
+                region
+                and region != "강원"
+            ):
+
+                st.info(
+                    "현재 서비스는 강원지역 소상공인을 "
+                    "우선 대상으로 안내하고 있습니다."
+                )
+
+            elif needs_clarification(
                 question
             ):
 
                 st.session_state.clarify_question = (
                     question
-                )
-
-                st.session_state.clarify_support = (
-                    selected_support_type
                 )
 
                 st.session_state.screen = (
@@ -3561,90 +3035,60 @@ if st.session_state.screen == "search":
 
                 st.rerun()
 
+            else:
 
-            try:
+                support_type = detect_support_type(
+                    question
+                )
 
-                with st.spinner(
-                    "조건에 맞는 지원사업을 찾고 있습니다..."
-                ):
+                try:
 
-                    results = (
-                        generate_results(
-                            question,
-                            selected_support_type
+                    results = perform_search(
+                        question,
+                        support_type
+                    )
+
+                    if not results:
+
+                        st.warning(
+                            "현재 확인 가능한 자료에서는 "
+                            "신청 가능한 지원사업을 찾지 못했습니다."
                         )
-                    )
 
+                    else:
 
-                if not results:
+                        st.session_state.results = results
+                        st.session_state.result_index = 0
 
-                    st.warning(
-                        "현재 등록된 자료에서는 "
-                        "조건에 맞는 지원사업을 찾지 못했습니다."
-                    )
+                        st.session_state.original_question = (
+                            question
+                        )
 
+                        st.session_state.selected_support = (
+                            support_type
+                        )
 
-                else:
+                        st.session_state.call_scripts = {}
 
-                    st.session_state.results = (
-                        results
-                    )
+                        st.session_state.screen = (
+                            "results"
+                        )
 
-                    st.session_state.result_index = 0
+                        st.rerun()
 
-                    st.session_state.original_question = (
-                        question
-                    )
-
-                    st.session_state.selected_support = (
-                        selected_support_type
-                    )
-
-                    st.session_state.screen = (
-                        "results"
-                    )
-
-                    st.rerun()
-
-
-            except Exception as e:
-
-                error_text = str(e)
-
-
-                if (
-                    "429" in error_text
-                    or "RESOURCE_EXHAUSTED" in error_text
-                    or "quota" in error_text.lower()
-                    or "rate limit" in error_text.lower()
-                ):
-
-                    st.warning(
-                        "현재 AI 답변 사용량이 많아 "
-                        "잠시 답변을 만들 수 없습니다."
-                    )
-
-                    st.info(
-                        "잠시 후 다시 시도해주세요. "
-                        "저장된 정책자료와 검색 데이터에는 "
-                        "문제가 없습니다."
-                    )
-
-
-                else:
+                except Exception as e:
 
                     st.error(
-                        "검색 결과를 만드는 중 "
-                        "오류가 발생했습니다."
+                        "검색 중 오류가 발생했습니다."
                     )
 
                     st.code(
-                        error_text
+                        str(e)
                     )
 
 
 # =========================================================
-# 31. 추가 질문 화면
+# 29. 추가 질문 화면
 # =========================================================
 
 elif st.session_state.screen == "clarify":
@@ -3653,24 +3097,22 @@ elif st.session_state.screen == "clarify":
         "조금만 더 알려주세요"
     )
 
-
-    st.write(
-        "더 잘 맞는 지원을 찾기 위해 "
-        "지금 가장 필요한 도움을 선택해주세요."
+    render_html(
+        """
+<div class="hero-card">
+<div class="hero-label">
+한 번만 더 선택해주세요
+</div>
+<div class="hero-title">
+지금 가장 필요한 도움은 무엇인가요?
+</div>
+<div class="hero-text">
+정확한 정책 이름은 몰라도 괜찮습니다.<br>
+가장 가까운 항목 하나만 눌러주세요.
+</div>
+</div>
+"""
     )
-
-
-    st.caption(
-        "정확한 정책 이름을 모르셔도 됩니다."
-    )
-
-
-    st.divider()
-
-
-    # -----------------------------------------------------
-    # 사용자가 입력했던 내용
-    # -----------------------------------------------------
 
     with st.expander(
         "내가 입력한 내용"
@@ -3680,121 +3122,81 @@ elif st.session_state.screen == "clarify":
             st.session_state.clarify_question
         )
 
-
-    st.markdown(
-        "### 지금 가장 필요한 것은 무엇인가요?"
-    )
-
-
-    st.caption(
-        "가장 가까운 항목 하나만 선택해주세요."
-    )
-
-
     col1, col2 = st.columns(2)
-
 
     with col1:
 
-        operating_support = st.button(
-            "💰 사업비·운영비 지원",
+        b1 = st.button(
+            "💰 사업비·운영비",
             use_container_width=True,
         )
 
-
     with col2:
 
-        financing = st.button(
+        b2 = st.button(
             "🏦 대출·자금조달",
             use_container_width=True,
         )
 
-
     col3, col4 = st.columns(2)
-
 
     with col3:
 
-        labor = st.button(
+        b3 = st.button(
             "👥 직원 인건비",
             use_container_width=True,
         )
 
-
     with col4:
 
-        marketing = st.button(
+        b4 = st.button(
             "📢 홍보·마케팅",
             use_container_width=True,
         )
 
-
     col5, col6 = st.columns(2)
-
 
     with col5:
 
-        facility = st.button(
+        b5 = st.button(
             "🏪 시설·장비",
             use_container_width=True,
         )
 
-
     with col6:
 
-        guarantee = st.button(
+        b6 = st.button(
             "🛡 보증",
             use_container_width=True,
         )
 
-
-    unsure = st.button(
+    b7 = st.button(
         "잘 모르겠어요",
         use_container_width=True,
     )
 
-
     choice = None
 
+    if b1:
+        choice = "사업비·운영비"
 
-    if operating_support:
-
-        choice = "사업비·운영비 지원"
-
-
-    elif financing:
-
+    elif b2:
         choice = "대출·자금조달"
 
-
-    elif labor:
-
+    elif b3:
         choice = "직원 인건비"
 
-
-    elif marketing:
-
+    elif b4:
         choice = "홍보·마케팅"
 
-
-    elif facility:
-
+    elif b5:
         choice = "시설·장비"
 
-
-    elif guarantee:
-
+    elif b6:
         choice = "보증"
 
-
-    elif unsure:
-
+    elif b7:
         choice = "잘 모르겠어요"
-
-
-    # -----------------------------------------------------
-    # 선택 후 실제 검색
-    # -----------------------------------------------------
 
     if choice:
 
@@ -3805,46 +3207,27 @@ elif st.session_state.screen == "clarify":
             )
         )
 
-
-        # =============================================
-        # 사용자가 추가로 선택한 실제 목적에 따라
-        # 검색할 지원유형을 다시 결정합니다.
-        # =============================================
-
-        clarified_support_type = (
-            resolve_clarify_support_type(
-                choice,
-                st.session_state.clarify_support,
-            )
+        support_type = clarify_support_type(
+            choice
         )
-
 
         try:
 
-            with st.spinner(
-                "조건에 맞는 지원사업을 찾고 있습니다..."
-            ):
-
-                results = generate_results(
-                    clarified_question,
-                    clarified_support_type,
-                )
-
+            results = perform_search(
+                clarified_question,
+                support_type,
+            )
 
             if not results:
 
                 st.warning(
-                    "현재 등록된 자료에서는 "
-                    "조건에 맞는 지원사업을 찾지 못했습니다."
+                    "현재 확인 가능한 자료에서는 "
+                    "신청 가능한 지원사업을 찾지 못했습니다."
                 )
-
 
             else:
 
-                st.session_state.results = (
-                    results
-                )
-
+                st.session_state.results = results
                 st.session_state.result_index = 0
 
                 st.session_state.original_question = (
@@ -3852,8 +3235,10 @@ elif st.session_state.screen == "clarify":
                 )
 
                 st.session_state.selected_support = (
-                    clarified_support_type
+                    support_type
                 )
+
+                st.session_state.call_scripts = {}
 
                 st.session_state.screen = (
                     "results"
@@ -3861,122 +3246,55 @@ elif st.session_state.screen == "clarify":
 
                 st.rerun()
 
-
         except Exception as e:
 
-            error_text = str(e)
+            st.error(
+                "검색 중 오류가 발생했습니다."
+            )
 
-
-            if (
-                "429" in error_text
-                or "RESOURCE_EXHAUSTED" in error_text
-                or "quota" in error_text.lower()
-                or "rate limit" in error_text.lower()
-            ):
-
-                st.warning(
-                    "현재 AI 답변 사용량이 많아 "
-                    "잠시 답변을 만들 수 없습니다."
-                )
-
-                st.info(
-                    "잠시 후 다시 시도해주세요. "
-                    "저장된 정책자료와 검색 데이터에는 "
-                    "문제가 없습니다."
-                )
-
-
-            else:
-
-                st.error(
-                    "검색 결과를 만드는 중 "
-                    "오류가 발생했습니다."
-                )
-
-                st.code(
-                    error_text
-                )
-
+            st.code(
+                str(e)
+            )
 
     st.divider()
-
 
     if st.button(
         "← 질문 다시 쓰기",
         use_container_width=True,
     ):
 
-        st.session_state.screen = "search"
+        st.session_state.screen = (
+            "search"
+        )
 
         st.rerun()
 
 
 # =========================================================
-# 32. 결과 화면
+# 30. 결과 화면
 # =========================================================
 
 else:
 
-    results = (
-        st.session_state.results
-    )
-
-
-    index = (
-        st.session_state.result_index
-    )
-
-
-    total = len(results)
-
+    results = st.session_state.results
 
     if not results:
-
         go_home()
 
+    index = st.session_state.result_index
+    total = len(results)
 
     current = results[
         index
     ]
 
-
     st.caption(
         f"추천 결과 {index + 1} / {total}"
     )
 
-
     st.progress(
         (index + 1) / total
     )
-
-
-    # =====================================================
-    # 지원 금액
-    # =====================================================
-
-    st.markdown(
-        f"# {current.get('amount', '지원금액 확인 필요')}"
-    )
-
-
-    # =====================================================
-    # 사업명
-    # =====================================================
-
-    st.markdown(
-        f"## {current.get('name', '지원사업')}"
-    )
-
-
-    # =====================================================
-    # 지원 종류
-    # =====================================================
-
-    current_type = current.get(
-        "type",
-        "기타"
-    )
-
 
     TYPE_LABELS = {
 
@@ -4002,71 +3320,242 @@ else:
             "지원사업",
     }
 
+    # =====================================================
+    # 핵심 변경:
+    # 원래 amount를 화면 표시 직전에 읽기 쉽게 변환
+    # =====================================================
 
-    st.caption(
-        TYPE_LABELS.get(
-            current_type,
-            current_type
+    raw_amount = current.get(
+        "amount",
+        "지원금액 확인 필요"
+    )
+
+    display_amount = (
+        normalize_amount_display(
+            raw_amount
         )
     )
 
-
-    st.divider()
-
-
-    # =====================================================
-    # 추천 이유
-    # =====================================================
-
-    st.markdown(
-        "### 추천이유"
+    amount = html_escape(
+        display_amount
     )
 
-
-    st.write(
+    name = html_escape(
         current.get(
-            "reason",
-            "확인 필요"
+            "name",
+            "지원사업"
         )
     )
 
-
-    # =====================================================
-    # 지원 대상
-    # =====================================================
-
-    st.markdown(
-        "### 지원대상"
-    )
-
-
-    st.write(
+    type_label = TYPE_LABELS.get(
         current.get(
-            "target",
-            "확인 필요"
+            "type",
+            "기타"
+        ),
+        "지원사업"
+    )
+
+    render_html(
+        f"""
+<div class="result-card">
+<div class="amount-label">
+받을 수 있는 혜택
+</div>
+<div class="amount-main">
+{amount}
+</div>
+<div class="policy-name">
+{name}
+</div>
+<div class="type-pill">
+{html_escape(type_label)}
+</div>
+</div>
+"""
+    )
+
+    # =====================================================
+    # 내 조건 확인
+    # =====================================================
+
+    eligibility = current.get(
+        "eligibility",
+        []
+    )
+
+    if eligibility:
+
+        rows = ""
+
+        for item in eligibility:
+
+            label = html_escape(
+                item.get(
+                    "label",
+                    "조건"
+                )
+            )
+
+            status = item.get(
+                "status",
+                "확인 필요"
+            )
+
+            rows += (
+                '<div class="condition-row">'
+                '<div class="condition-label">'
+                f'{label}'
+                '</div>'
+                '<div class="condition-status '
+                f'{condition_css(status)}">'
+                f'{html_escape(status)}'
+                '</div>'
+                '</div>'
+            )
+
+        render_html(
+            f"""
+<div class="info-card">
+<div class="info-title">
+내 조건 확인
+</div>
+{rows}
+</div>
+"""
+        )
+
+    # =====================================================
+    # 신청 상태
+    # =====================================================
+
+    application_status = current.get(
+        "application_status",
+        "확인 필요"
+    )
+
+    application_detail = current.get(
+        "application_detail",
+        "담당기관에 현재 접수 여부를 확인해주세요."
+    )
+
+    render_html(
+        f"""
+<div class="application-card">
+<div class="info-title">
+신청상태
+</div>
+<div class="application-status {application_css(application_status)}">
+{html_escape(application_status)}
+</div>
+<div class="application-detail">
+{html_escape(application_detail)}
+</div>
+</div>
+"""
+    )
+
+    # =====================================================
+    # 전화
+    # =====================================================
+
+    contact = current.get(
+        "contact",
+        "세부 공고 확인"
+    )
+
+    render_html(
+        f"""
+<div class="phone-card">
+<div class="phone-label">
+전화로 확인하세요
+</div>
+<div class="phone-main">
+{html_escape(contact)}
+</div>
+</div>
+"""
+    )
+
+    phone = extract_phone(
+        contact
+    )
+
+    if phone:
+
+        tel_phone = re.sub(
+            r"[^0-9+]",
+            "",
+            phone
+        )
+
+        render_html(
+            f"""
+<a
+class="tel-button"
+href="tel:{tel_phone}">
+☎ 전화로 문의하기
+</a>
+"""
+        )
+
+    # =====================================================
+    # 뭐라고 물어볼까요?
+    # =====================================================
+
+    script_key = (
+        f"{index}:"
+        f"{current.get('name', '')}:"
+        f"{current.get('source', '')}"
+    )
+
+    if st.button(
+        "💬 뭐라고 물어볼까요?",
+        use_container_width=True,
+        type="primary",
+        key=f"call_help_{index}",
+    ):
+
+        with st.spinner(
+            "전화할 때 읽을 말을 준비하고 있습니다..."
+        ):
+
+            script = generate_call_script(
+                current,
+                st.session_state.original_question,
+            )
+
+        st.session_state.call_scripts[
+            script_key
+        ] = script
+
+    script = (
+        st.session_state.call_scripts.get(
+            script_key
         )
     )
 
+    if script:
 
-    # =====================================================
-    # 문의처
-    # =====================================================
+        script_html = ""
 
-    st.markdown(
-        "### 문의처"
-    )
+        for line in script:
 
+            script_html += (
+                '<div class="call-line">'
+                f'“{html_escape(line)}”'
+                '</div>'
+            )
 
-    st.write(
-        current.get(
-            "contact",
-            "세부 공고 확인"
+        render_html(
+            f"""
+<div class="call-card">
+<div class="call-title">
+📞 이렇게 말씀해보세요
+</div>
+{script_html}
+</div>
+"""
         )
-    )
-
-
-    st.divider()
-
 
     # =====================================================
     # 근거자료
@@ -4083,33 +3572,46 @@ else:
             )
         )
 
-
-        st.write(
-            f"{current.get('page', '확인 필요')}페이지"
+        page = current.get(
+            "page",
+            "확인 필요"
         )
 
+        st.write(
+            f"{page}페이지"
+        )
+
+        st.caption(
+            "실제 신청 전에는 담당기관의 최신 공고를 "
+            "한 번 더 확인해주세요."
+        )
+
+    st.divider()
 
     # =====================================================
-    # 페이지 이동
+    # 이동
     # =====================================================
 
     col1, col2, col3 = st.columns(
-        [1, 1.3, 1]
+        [
+            1,
+            1.25,
+            1,
+        ]
     )
-
 
     with col1:
 
         if st.button(
             "← 이전",
             use_container_width=True,
-            disabled=(index == 0),
+            disabled=(
+                index == 0
+            ),
         ):
 
             st.session_state.result_index -= 1
-
             st.rerun()
-
 
     with col2:
 
@@ -4119,7 +3621,6 @@ else:
         ):
 
             go_home()
-
 
     with col3:
 
@@ -4132,11 +3633,9 @@ else:
         ):
 
             st.session_state.result_index += 1
-
             st.rerun()
 
-
     st.caption(
-        "※ 실제 신청 전에는 담당기관의 최신 공고를 "
-        "한 번 더 확인해주세요."
+        "※ 이 서비스는 지원사업 탐색을 돕는 안내 도구입니다. "
+        "최종 신청 가능 여부는 담당기관에서 확인해주세요."
     )
